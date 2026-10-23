@@ -2,7 +2,9 @@
 
 Perlin-noise land, a North American riparian wetland, and a beaver colony simulation. The live app is in `my-react-app`.
 
-## Run the website
+**Public site:** https://mileurz.github.io/2026.9.2/
+
+## Run the website locally
 
 ```bash
 cd my-react-app
