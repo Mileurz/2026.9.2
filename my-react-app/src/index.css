@@ -1,10 +1,15 @@
 :root {
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --ink: #333333;
+  --muted: #767676;
+  --line: #c5c5c5;
+  --paper: #ffffff;
+  --wash: #eceeef;
+  --hover: #aaaaaa;
 
-  font: 16px/145% var(--sans);
-  color: #9ca3af;
-  background: #0c0d12;
+  font: 14px/1.5 var(--sans);
+  color: var(--ink);
+  background: var(--paper);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -24,7 +29,18 @@ body,
   overflow: hidden;
 }
 
+h1,
+h2,
+h3,
+p,
+button,
+input,
+select,
+label {
+  font-family: var(--sans);
+  font-weight: 400;
+}
+
 h1 {
-  font-family: var(--heading);
-  font-weight: 500;
+  font-weight: 400;
 }
