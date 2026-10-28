@@ -187,7 +187,7 @@ function separateBeavers(colony: ColonyState, world: BeaverWorld) {
 }
 
 function recoverBeaver(b: BeaverAgent, world: BeaverWorld, den: { u: number; v: number }) {
-  if (landJob(b.currentTask) || b.carrying || b.currentTask === 'CHEW_TREE') return
+  if (landJob(b.currentTask) || b.carrying) return
   if (walkable(world, b.u, b.v, true)) return
   const c = riverCenter(b.u)
   const tries = [
@@ -317,6 +317,7 @@ function committedTree(b: BeaverAgent, colony: ColonyState) {
 }
 
 function assignTree(b: BeaverAgent, colony: ColonyState, world: BeaverWorld) {
+  void world
   const held = committedTree(b, colony)
   if (held && isTreeValidTarget(held)) {
     if (b.currentTask !== 'MOVE_TO_TREE' && b.currentTask !== 'CHEW_TREE') {

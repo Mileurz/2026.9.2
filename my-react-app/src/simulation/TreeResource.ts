@@ -225,7 +225,7 @@ export function pickPreferredTree(
   forest: ForestState,
   from: Uv,
   allow?: (tree: TreeResource) => boolean,
-) {
+): TreeResource | null {
   indexForest(forest)
   let best: TreeResource | null = null
   let score = -Infinity
@@ -340,7 +340,7 @@ export function pickNearbyBranch(forest: ForestState, from: Uv, maxDist = 0.22) 
   return best
 }
 
-export function pickBuildingBranch(forest: ForestState, from: Uv, maxDist = 0.28) {
+export function pickBuildingBranch(forest: ForestState, from: Uv, maxDist = 0.28): BranchResource | null {
   indexForest(forest)
   let best: BranchResource | null = null
   let score = -Infinity

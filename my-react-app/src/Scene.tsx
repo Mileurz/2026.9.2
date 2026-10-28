@@ -851,7 +851,7 @@ function SeasonAtmosphere({
     }
     if (!sun.current) {
       scene.traverse((obj) => {
-        const light = obj as { isDirectionalLight?: boolean; castShadow?: boolean; intensity: number; color: Color }
+        const light = obj as unknown as { isDirectionalLight?: boolean; castShadow?: boolean; intensity: number; color: Color }
         if (light.isDirectionalLight && light.castShadow) sun.current = light
       })
     }
