@@ -6,14 +6,18 @@ import type { NoiseParams } from '../perlin'
 import type { ColonyState } from '../simulation/Colony'
 import type { DamPiece, DamPieceKind } from '../simulation/Dam'
 import { carveRiver, cappedWaterN, defaultHydro } from '../simulation/Hydrology'
+import { STEM_DRAW, bindWorldCull } from '../visual'
+
+/** Temporary instanced wood/mud/stone. Replace later with scanned stick/log/mud GLB pieces. */
 
 const dummy = new Object3D()
+const tint = new Color()
 const COLORS: Record<DamPieceKind, Color> = {
-  branch: new Color('#8a6240'),
-  log: new Color('#6a4a30'),
-  mud: new Color('#6b5340'),
-  stone: new Color('#8a8478'),
-  vegetation: new Color('#5a6c42'),
+  branch: new Color('#6a4a30'),
+  log: new Color('#4e3826'),
+  mud: new Color('#4a3c30'),
+  stone: new Color('#6e6a64'),
+  vegetation: new Color('#4a5840'),
 }
 
 const KINDS: DamPieceKind[] = ['branch', 'log', 'mud', 'stone', 'vegetation']
@@ -31,7 +35,7 @@ function damY(
   const n = carveRiver(raw, u, v, params.seaLevel)
   const land = n * params.height
   const water = cappedWaterN(n, raw, u, v, hydro, params.seaLevel) * params.height
-  return Math.max(land, water) + 0.016 + lift * params.height
+  return Math.max(land, water) + 0.008 + lift * params.height
 }
 
 function posePiece(
@@ -50,7 +54,7 @@ function posePiece(
   } else {
     dummy.rotation.set(piece.pitch * 0.4, piece.yaw, piece.roll)
   }
-  dummy.scale.set(piece.sx * fit, piece.sy * fit, piece.sz * fit)
+  dummy.scale.set(piece.sx * fit * STEM_DRAW, piece.sy * fit * STEM_DRAW, piece.sz * fit * STEM_DRAW)
   dummy.updateMatrix()
 }
 
@@ -70,6 +74,7 @@ export function DamField({
     stone: null,
     vegetation: null,
   })
+  const finger = useRef('')
 
   useLayoutEffect(() => {
     for (const kind of KINDS) {
@@ -80,6 +85,9 @@ export function DamField({
 
   useFrame(() => {
     const dam = colonyRef.current.dam
+    const key = `${dam?.pieces.length ?? 0}|${(dam?.completion ?? 0).toFixed(3)}|${(colonyRef.current.hydro?.upstreamLevel ?? 0).toFixed(3)}`
+    if (key === finger.current) return
+    finger.current = key
     if (!dam?.pieces?.length) {
       for (const kind of KINDS) {
         const mesh = refs.current[kind]
@@ -99,10 +107,17 @@ export function DamField({
       list.forEach((piece, i) => {
         posePiece(piece, params, field, fit, hydro)
         mesh?.setMatrixAt(i, dummy.matrix)
+        if (mesh) {
+          tint.copy(COLORS[kind])
+          tint.offsetHSL(0, 0, ((piece.yaw * 7) % 1) * 0.12 - 0.06)
+          mesh.setColorAt(i, tint)
+        }
       })
       if (mesh) {
         mesh.count = list.length
         mesh.instanceMatrix.needsUpdate = true
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+        bindWorldCull(mesh, params.worldSize)
       }
     }
   })
@@ -114,57 +129,49 @@ export function DamField({
           refs.current.branch = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
         castShadow
-        receiveShadow
       >
-        <cylinderGeometry args={[1, 0.85, 1, 5]} />
-        <meshStandardMaterial color={COLORS.branch} roughness={0.92} />
+        <cylinderGeometry args={[1, 0.68, 1, 6]} />
+        <meshStandardMaterial color={COLORS.branch} roughness={0.96} metalness={0} envMapIntensity={0.1} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.log = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
         castShadow
-        receiveShadow
       >
-        <cylinderGeometry args={[1, 0.92, 1, 6]} />
-        <meshStandardMaterial color={COLORS.log} roughness={0.9} />
+        <cylinderGeometry args={[1, 0.78, 1, 7]} />
+        <meshStandardMaterial color={COLORS.log} roughness={0.94} metalness={0} envMapIntensity={0.1} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.mud = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
         receiveShadow
       >
-        <sphereGeometry args={[1, 6, 5]} />
-        <meshStandardMaterial color={COLORS.mud} roughness={1} />
+        <sphereGeometry args={[1, 7, 6]} />
+        <meshStandardMaterial color={COLORS.mud} roughness={0.82} metalness={0} envMapIntensity={0.16} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.stone = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
         castShadow
-        receiveShadow
       >
         <dodecahedronGeometry args={[1, 0]} />
-        <meshStandardMaterial color={COLORS.stone} roughness={0.86} />
+        <meshStandardMaterial color={COLORS.stone} roughness={0.92} metalness={0.02} envMapIntensity={0.2} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.vegetation = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
       >
-        <coneGeometry args={[1, 1, 5]} />
-        <meshStandardMaterial color={COLORS.vegetation} roughness={0.95} />
+        <sphereGeometry args={[1, 6, 5]} />
+        <meshStandardMaterial color={COLORS.vegetation} roughness={0.96} metalness={0} />
       </instancedMesh>
     </group>
   )

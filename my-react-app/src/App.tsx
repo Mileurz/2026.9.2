@@ -4,7 +4,10 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { Vector3 } from 'three'
 import { AccountBar } from './AccountBar'
 import { BeaverInspect } from './components/BeaverInspect'
-import { ColonyStats } from './components/ColonyStats'
+import { CameraModes } from './components/CameraModes'
+import type { CameraMode } from './components/CameraRig'
+import { ColonyStats, type OverlayToggles } from './components/ColonyStats'
+import { LandscapeTimeline } from './components/LandscapeTimeline'
 import { Cover } from './Cover'
 import { auth } from './firebase'
 import { NoiseView } from './NoiseView'
@@ -26,6 +29,16 @@ import {
   setSimSpeed,
   type SimSpeed,
 } from './simulation/SimulationEngine'
+import {
+  landscapeCard,
+  liveAgeYears,
+  restoreSnapshot,
+  returnToLive,
+  scrubToAge,
+  viewingSnapshot,
+  type EcoEvent,
+  type LandscapeCard,
+} from './simulation/Timeline'
 import { forestStats } from './simulation/TreeResource'
 import { scatterTreesOnLand, type TreeSpot } from './TreeField'
 import { DEFAULT_TREE_KIND, TREE_CATALOG, type TreeKind } from './treeCatalog'
@@ -38,9 +51,9 @@ function App() {
   const [cover, setCover] = useState<'in' | 'folding' | 'out'>('in')
   const [params, setParams] = useState(defaultNoiseParams)
   const [applied, setApplied] = useState<NoiseParams | null>({ ...defaultNoiseParams })
-  const [mapOpen, setMapOpen] = useState(true)
-  const [simOpen, setSimOpen] = useState(true)
-  const [accountOpen, setAccountOpen] = useState(true)
+  const [mapOpen, setMapOpen] = useState(false)
+  const [simOpen, setSimOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
   const [colonyOpen, setColonyOpen] = useState(true)
   const [running, setRunning] = useState(false)
   const [hasSim, setHasSim] = useState(false)
@@ -59,11 +72,20 @@ function App() {
   const coverRef = useRef(createWeatherCover())
   const colonyRef = useRef(createFoundingColony())
   const statsFinger = useRef('')
+  const inspectFinger = useRef('')
   const followPos = useRef(new Vector3())
   const [selectedBeaverId, setSelectedBeaverId] = useState<string | null>(null)
   const [inspectBeaver, setInspectBeaver] = useState<BeaverAgent | null>(null)
   const [followCamera, setFollowCamera] = useState(false)
-  const [showTerritory, setShowTerritory] = useState(false)
+  const [cameraMode, setCameraMode] = useState<CameraMode>('free')
+  const [compareSide, setCompareSide] = useState<'before' | 'after'>('before')
+  const [layers, setLayers] = useState<OverlayToggles>({
+    territory: false,
+    treeTargets: false,
+    resourceNodes: false,
+    waterChange: false,
+    ecologicalZones: false,
+  })
   const [resourceStats, setResourceStats] = useState({
     availableBranches: 0,
     woodCollected: 0,
@@ -97,6 +119,30 @@ function App() {
     clockDayOfYear: 249,
     knobs: emptyKnobs(),
     headline: 'Autumn: cutting wood and starting a dam.',
+  })
+  const [timelineView, setTimelineView] = useState({
+    ageYears: 0,
+    liveAgeYears: 0,
+    viewing: false,
+    viewingLabel: '',
+    events: [
+      {
+        kind: 'founding',
+        label: 'Founding Pair Arrives',
+        ageYears: 0,
+        snapshotId: 'e:founding',
+      },
+    ] as EcoEvent[],
+    yearReady: [0],
+    liveCard: {
+      ageYears: 0,
+      pondArea: 0,
+      wetlandArea: 0,
+      treesCut: 0,
+      population: 2,
+      damCompletion: 0,
+    } as LandscapeCard,
+    viewCard: null as LandscapeCard | null,
   })
 
   useEffect(() => {
@@ -171,12 +217,19 @@ function App() {
       const colony = colonyRef.current
       if (selectedBeaverId) {
         const found = colony.beavers.find((b) => b.id === selectedBeaverId)
-        setInspectBeaver(
-          found
-            ? { ...found, offspring: found.offspring ? [...found.offspring] : [] }
-            : null,
-        )
-      } else {
+        const next = found
+          ? `${found.id}|${found.currentTask}|${found.u.toFixed(3)}|${found.v.toFixed(3)}|${found.lifeStage}|${found.energy.toFixed(2)}|${found.carrying}|${found.age.toFixed(2)}`
+          : 'none'
+        if (next !== inspectFinger.current) {
+          inspectFinger.current = next
+          setInspectBeaver(
+            found
+              ? { ...found, offspring: found.offspring ? [...found.offspring] : [] }
+              : null,
+          )
+        }
+      } else if (inspectFinger.current) {
+        inspectFinger.current = ''
         setInspectBeaver(null)
       }
       const cut = colony.forest ? forestStats(colony.forest) : { availableBranches: 0, treesCut: 0 }
@@ -189,32 +242,39 @@ function App() {
       colony.clock = clock
       const date = calendarOf(clock)
       const headline = colonyHeadline(colony)
-      const finger = `${date.day}|${people.population}|${(dam?.completion ?? 0).toFixed(2)}|${(colony.hydro?.pondArea ?? 0).toFixed(2)}|${headline}|${clock.paused}|${clock.speed}|${date.dayOfYear}`
+      const hist = colony.history
+      const view = viewingSnapshot(colony)
+      const liveYears = liveAgeYears(colony)
+      const ageYears = view ? view.ageYears : liveYears
+      const liveCard = hist?.live ? landscapeCard(hist.live) : landscapeCard(colony)
+      const finite = (n: number) => (Number.isFinite(n) ? n : 0)
+      const num = (n: number, d = 2) => finite(n).toFixed(d)
+      const finger = `${date.day}|${people.population}|${num(dam?.completion ?? 0)}|${num(colony.hydro?.pondArea ?? 0)}|${headline}|${clock.paused}|${clock.speed}|${date.dayOfYear}|${hist?.viewingId ?? 'live'}|${hist?.events.length ?? 0}|${hist?.snapshots.length ?? 0}|${num(ageYears)}`
       if (finger === statsFinger.current) return
       statsFinger.current = finger
       setResourceStats({
-        availableBranches: cut.availableBranches,
-        woodCollected: colony.woodCollected ?? 0,
-        treesCut: cut.treesCut,
-        damLength: dam ? dam.length * 7.2 : 0,
-        damHeight: dam ? dam.height : 0,
-        damMaterial: dam ? dam.materialAmount : 0,
-        constructionProgress: dam ? dam.completion : 0,
-        waterLevel: colony.hydro?.upstreamLevel ?? 0.02,
-        pondArea: colony.hydro?.pondArea ?? 0,
-        floodedArea: colony.hydro?.floodedArea ?? 0,
+        availableBranches: finite(cut.availableBranches),
+        woodCollected: finite(colony.woodCollected ?? 0),
+        treesCut: finite(cut.treesCut),
+        damLength: finite(dam ? dam.length * 7.2 : 0),
+        damHeight: finite(dam ? dam.height : 0),
+        damMaterial: finite(dam ? dam.materialAmount : 0),
+        constructionProgress: finite(dam ? dam.completion : 0),
+        waterLevel: finite(colony.hydro?.upstreamLevel ?? 0.02),
+        pondArea: finite(colony.hydro?.pondArea ?? 0),
+        floodedArea: finite(colony.hydro?.floodedArea ?? 0),
         lodgeStage: colony.lodge ? lodgeStageLabel(colony.lodge.stage) : 'Small branch pile',
-        lodgeMaterial: colony.lodge?.materialAmount ?? 0,
-        lodgeSize: colony.lodge ? colony.lodge.size * 7.2 : 0,
+        lodgeMaterial: finite(colony.lodge?.materialAmount ?? 0),
+        lodgeSize: finite(colony.lodge ? colony.lodge.size * 7.2 : 0),
         population: people.population,
         adults: people.adults,
         subadults: people.subadults,
         yearlings: people.yearlings,
         kits: people.kits,
-        wetlandArea: eco.wetlandArea,
-        treesRemaining: eco.treesRemaining,
-        deadTrees: eco.deadTrees,
-        floodedForestArea: eco.floodedForestArea,
+        wetlandArea: finite(eco.wetlandArea),
+        treesRemaining: finite(eco.treesRemaining),
+        deadTrees: finite(eco.deadTrees),
+        floodedForestArea: finite(eco.floodedForestArea),
         wetlandWildlife: colony.wildlife ? wildlifeStats(colony.wildlife).wetlandWildlife : 'Sparse',
         season: colony.season ? seasonLabel(colony.season.name) : 'Spring',
         clockYear: date.year,
@@ -225,6 +285,16 @@ function App() {
         clockDayOfYear: date.dayOfYear,
         knobs: { ...ensureKnobs(colony.knobs) },
         headline,
+      })
+      setTimelineView({
+        ageYears,
+        liveAgeYears: liveYears,
+        viewing: Boolean(view),
+        viewingLabel: view?.label ?? '',
+        events: hist?.events ?? [],
+        yearReady: hist?.yearMarksTaken ?? [0],
+        liveCard,
+        viewCard: view?.card ?? null,
       })
     }, 180)
     return () => window.clearInterval(id)
@@ -256,6 +326,23 @@ function App() {
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [running, speed, tab])
+
+  function pullTimeline() {
+    const colony = colonyRef.current
+    const hist = colony.history
+    const view = viewingSnapshot(colony)
+    const liveYears = liveAgeYears(colony)
+    setTimelineView({
+      ageYears: view ? view.ageYears : liveYears,
+      liveAgeYears: liveYears,
+      viewing: Boolean(view),
+      viewingLabel: view?.label ?? '',
+      events: hist?.events ?? [],
+      yearReady: hist?.yearMarksTaken ?? [0],
+      liveCard: hist?.live ? landscapeCard(hist.live) : landscapeCard(colony),
+      viewCard: view?.card ?? null,
+    })
+  }
 
   return (
     <div className="app">
@@ -293,7 +380,12 @@ function App() {
           onSelectBeaver={setSelectedBeaverId}
           followPos={followPos}
           followCamera={followCamera}
-          showTerritory={showTerritory}
+          cameraMode={cameraMode}
+          showTerritory={layers.territory}
+          showTreeTargets={layers.treeTargets}
+          showResourceNodes={layers.resourceNodes}
+          showWaterChange={layers.waterChange}
+          showEcologicalZones={layers.ecologicalZones}
         />
       )}
       {cover !== 'out' ? (
@@ -305,83 +397,118 @@ function App() {
       ) : null}
       {cover === 'out' ? (
         <>
-          <header className={`ui-overlay ${tab === 'tree' ? 'has-tree-tools' : ''}`}>
+          <header className={`ui-overlay has-camera-bar ${tab === 'tree' ? 'has-tree-tools' : ''}`}>
             <div className="ui-overlay-row">
             <div>
-              <p className="site-mark">Studio</p>
+              <p className="site-mark">Riparian wetland study</p>
               <h1 className="site-title">BEAVER NOISE</h1>
             </div>
+            <div className="toolbar-stack">
             <div className="toolbar">
-              <button
-                type="button"
-                className={`toolbar-btn ${tab === 'model' ? 'is-active' : ''}`}
-                onClick={() => setTab('model')}
-              >
-                Model
-              </button>
-              <button
-                type="button"
-                className={`toolbar-btn ${tab === 'voxel' ? 'is-active' : ''}`}
-                onClick={() => setTab('voxel')}
-              >
-                Voxel
-              </button>
-              <button
-                type="button"
-                className={`toolbar-btn ${tab === 'tree' ? 'is-active' : ''}`}
-                onClick={() => setTab('tree')}
-              >
-                Tree
-              </button>
-              <button
-                type="button"
-                className={`toolbar-btn ${tab === 'colony' ? 'is-active' : ''}`}
-                onClick={() => setTab('colony')}
-              >
-                Colony
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => setColonyOpen((open) => !open)}
-              >
-                {colonyOpen ? 'Hide colony' : 'Show colony'}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => setSimOpen((open) => !open)}
-              >
-                {simOpen ? 'Hide simulation' : 'Show simulation'}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => setShowTerritory((open) => !open)}
-              >
-                {showTerritory ? 'Hide Territory' : 'Show Territory'}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => setMapOpen((open) => !open)}
-              >
-                {mapOpen ? 'Hide 2D map' : 'Show 2D map'}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => setAccountOpen((open) => !open)}
-              >
-                {accountOpen ? 'Hide sign in' : 'Sign in'}
-              </button>
-              <button
-                type="button"
-                className="toolbar-btn toolbar-btn-accent"
-                onClick={() => setApplied({ ...liveParams })}
-              >
-                Apply height field to 3D plane
-              </button>
+              <div className="toolbar-row">
+                <button
+                  type="button"
+                  className={`toolbar-btn ${tab === 'model' ? 'is-active' : ''}`}
+                  onClick={() => setTab('model')}
+                >
+                  Model
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${tab === 'voxel' ? 'is-active' : ''}`}
+                  onClick={() => setTab('voxel')}
+                >
+                  Voxel
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${tab === 'tree' ? 'is-active' : ''}`}
+                  onClick={() => setTab('tree')}
+                >
+                  Tree
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${tab === 'colony' ? 'is-active' : ''}`}
+                  onClick={() => setTab('colony')}
+                >
+                  Colony
+                </button>
+              </div>
+              <div className="toolbar-row">
+                <button
+                  type="button"
+                  className={`toolbar-btn ${colonyOpen ? 'is-active' : ''}`}
+                  onClick={() => setColonyOpen((open) => !open)}
+                >
+                  Record
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${simOpen ? 'is-active' : ''}`}
+                  onClick={() => setSimOpen((open) => !open)}
+                >
+                  Simulation map
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${mapOpen ? 'is-active' : ''}`}
+                  onClick={() => setMapOpen((open) => !open)}
+                >
+                  Height field
+                </button>
+                <button
+                  type="button"
+                  className={`toolbar-btn ${accountOpen ? 'is-active' : ''}`}
+                  onClick={() => setAccountOpen((open) => !open)}
+                >
+                  Sign in
+                </button>
+              </div>
+            </div>
+            {tab !== 'voxel' ? (
+              <CameraModes
+                mode={cameraMode}
+                compareSide={compareSide}
+                onMode={(next) => {
+                  if (cameraMode === 'compare' && next !== 'compare') {
+                    returnToLive(colonyRef.current)
+                    statsFinger.current = ''
+                    pullTimeline()
+                  }
+                  if (next === 'follow') {
+                    const id = selectedBeaverId ?? colonyRef.current.beavers[0]?.id ?? null
+                    if (id) setSelectedBeaverId(id)
+                    setFollowCamera(true)
+                  } else {
+                    setFollowCamera(false)
+                  }
+                  if (next === 'compare') {
+                    setCompareSide('before')
+                    const founding = colonyRef.current.history?.snapshots.find(
+                      (s) => s.event === 'founding' || s.id === 'e:founding',
+                    )
+                    if (founding) restoreSnapshot(colonyRef.current, founding.id)
+                    statsFinger.current = ''
+                    pullTimeline()
+                  }
+                  setCameraMode(next)
+                }}
+                onCompareSide={(side) => {
+                  setCompareSide(side)
+                  if (side === 'before') {
+                    const founding = colonyRef.current.history?.snapshots.find(
+                      (s) => s.event === 'founding' || s.id === 'e:founding',
+                    )
+                    if (founding) restoreSnapshot(colonyRef.current, founding.id)
+                  } else {
+                    returnToLive(colonyRef.current)
+                  }
+                  statsFinger.current = ''
+                  pullTimeline()
+                }}
+              />
+            ) : null}
             </div>
             </div>
             {tab === 'tree' ? (
@@ -496,6 +623,7 @@ function App() {
                 }))
               }}
               onSpeed={(speed) => {
+                if (colonyRef.current.history?.viewingId) returnToLive(colonyRef.current)
                 const clock = ensureClock(colonyRef.current.clock)
                 colonyRef.current.clock = clock
                 setSimSpeed(clock, speed)
@@ -509,9 +637,21 @@ function App() {
                 statsFinger.current = ''
                 setSelectedBeaverId(null)
                 setFollowCamera(false)
+                setCameraMode('free')
+                setCompareSide('before')
                 setInspectBeaver(null)
                 const next = createFoundingColony()
                 colonyRef.current = next
+                setTimelineView({
+                  ageYears: 0,
+                  liveAgeYears: 0,
+                  viewing: false,
+                  viewingLabel: '',
+                  events: next.history?.events ?? [],
+                  yearReady: next.history?.yearMarksTaken ?? [0],
+                  liveCard: landscapeCard(next),
+                  viewCard: null,
+                })
                 const clock = ensureClock(next.clock)
                 const date = calendarOf(clock)
                 setResourceStats((stats) => ({
@@ -568,16 +708,63 @@ function App() {
               floodedForestArea={resourceStats.floodedForestArea}
               wetlandWildlife={resourceStats.wetlandWildlife}
               season={resourceStats.season}
+              layers={layers}
+              onLayer={(key) => setLayers((prev) => ({ ...prev, [key]: !prev[key] }))}
             />
           ) : null}
           {tab !== 'voxel' && inspectBeaver ? (
             <BeaverInspect
               beaver={inspectBeaver}
-              following={followCamera}
-              onFollow={() => setFollowCamera((on) => !on)}
+              following={cameraMode === 'follow'}
+              onFollow={() => {
+                if (cameraMode === 'follow') {
+                  setFollowCamera(false)
+                  setCameraMode('free')
+                  return
+                }
+                setFollowCamera(true)
+                setCameraMode('follow')
+              }}
               onClose={() => {
                 setSelectedBeaverId(null)
                 setFollowCamera(false)
+              }}
+            />
+          ) : null}
+          {tab !== 'voxel' ? (
+            <LandscapeTimeline
+              ageYears={timelineView.ageYears}
+              liveAgeYears={timelineView.liveAgeYears}
+              viewing={timelineView.viewing}
+              viewingLabel={timelineView.viewingLabel}
+              events={timelineView.events}
+              yearReady={timelineView.yearReady}
+              liveCard={timelineView.liveCard}
+              viewCard={timelineView.viewCard}
+              onScrub={(age) => {
+                scrubToAge(colonyRef.current, age)
+                statsFinger.current = ''
+                pullTimeline()
+              }}
+              onEvent={(id) => {
+                restoreSnapshot(colonyRef.current, id)
+                statsFinger.current = ''
+                pullTimeline()
+              }}
+              onYear={(year) => {
+                if (year >= liveAgeYears(colonyRef.current) - 0.05) returnToLive(colonyRef.current)
+                else {
+                  const mark = colonyRef.current.history?.snapshots.find((s) => s.yearMark === year)
+                  if (mark) restoreSnapshot(colonyRef.current, mark.id)
+                  else scrubToAge(colonyRef.current, year)
+                }
+                statsFinger.current = ''
+                pullTimeline()
+              }}
+              onLive={() => {
+                returnToLive(colonyRef.current)
+                statsFinger.current = ''
+                pullTimeline()
               }}
             />
           ) : null}
@@ -617,6 +804,8 @@ function App() {
                   statsFinger.current = ''
                   setSelectedBeaverId(null)
                   setFollowCamera(false)
+                  setCameraMode('free')
+                  setCompareSide('before')
                   setInspectBeaver(null)
                 }}
               />

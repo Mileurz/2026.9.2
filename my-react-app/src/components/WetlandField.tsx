@@ -1,6 +1,7 @@
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { useLayoutEffect, useRef, type MutableRefObject } from 'react'
-import { Color, InstancedMesh, Object3D } from 'three'
+import { Color, InstancedMesh, Object3D, Vector3 } from 'three'
+import { bindWorldCull } from '../visual'
 import { getHeightField, sampleHeightField, type HeightField } from '../heightField'
 import type { NoiseParams } from '../perlin'
 import type { ColonyState } from '../simulation/Colony'
@@ -15,10 +16,13 @@ const KIND_COLOR: Record<WetlandKind, Color> = {
   grass: new Color('#6e824c'),
   aquatic: new Color('#3d5a48'),
 }
-const headColor = new Color('#6a4e32')
-const shoreColor = new Color('#c4b496')
-const pathColor = new Color('#5a4a38')
+const deadStem = new Color('#6a5a40')
+const headColor = new Color('#5a402c')
+const shoreColor = new Color('#a89878')
+const pathColor = new Color('#4a3c30')
+const seasonTint = new Color()
 const KINDS: WetlandKind[] = ['reed', 'cattail', 'sedge', 'grass', 'aquatic']
+const camPos = new Vector3()
 const MAX: Record<WetlandKind, number> = {
   reed: 220,
   cattail: 160,
@@ -100,6 +104,9 @@ export function WetlandField({
   const headRef = useRef<InstancedMesh>(null)
   const shoreRef = useRef<InstancedMesh>(null)
   const pathRef = useRef<InstancedMesh>(null)
+  const { camera } = useThree()
+  const tick = useRef(0)
+  const finger = useRef('')
 
   useLayoutEffect(() => {
     for (const kind of KINDS) {
@@ -118,10 +125,22 @@ export function WetlandField({
     const field = getHeightField(params, offsetRef.current.x, offsetRef.current.y)
     const hydro = colony.hydro ?? defaultHydro
     const veg = colony.season?.vegetation ?? 1
+    const winter = colony.season?.winter ?? 0
+    const warmth = colony.season?.warmth ?? 0
     const fit = params.worldSize / 7.2
+    camera.getWorldPosition(camPos)
+    tick.current += 1
+    const far = camPos.length() > 6.2
+    const key = `${space.plants.length}|${space.oldShore.length}|${space.paths.length}|${veg.toFixed(2)}|${winter.toFixed(2)}|${Math.round(hydro.pondArea * 8)}`
+    if (key === finger.current && tick.current % (far ? 6 : 3) !== 0) return
+    finger.current = key
 
     for (const kind of KINDS) {
       const mesh = refs.current[kind]
+      if (mesh && mesh.material && 'color' in mesh.material) {
+        seasonTint.copy(KIND_COLOR[kind]).lerp(deadStem, Math.min(0.7, winter * 0.62 + warmth * 0.28))
+        ;(mesh.material as { color: Color }).color.copy(seasonTint)
+      }
       const list = space.plants.filter((p) => p.kind === kind).slice(0, MAX[kind])
       list.forEach((plant, i) => {
         poseStem(plant, field, params, hydro, veg)
@@ -130,6 +149,7 @@ export function WetlandField({
       if (mesh) {
         mesh.count = list.length
         mesh.instanceMatrix.needsUpdate = true
+        bindWorldCull(mesh, params.worldSize)
       }
     }
 
@@ -144,6 +164,7 @@ export function WetlandField({
     if (headRef.current) {
       headRef.current.count = cattails.length
       headRef.current.instanceMatrix.needsUpdate = true
+      bindWorldCull(headRef.current, params.worldSize)
     }
 
     const shores = space.oldShore.slice(0, 220)
@@ -158,6 +179,7 @@ export function WetlandField({
     if (shoreRef.current) {
       shoreRef.current.count = shores.length
       shoreRef.current.instanceMatrix.needsUpdate = true
+      bindWorldCull(shoreRef.current, params.worldSize)
     }
 
     const paths = space.paths.slice(0, 90)
@@ -172,6 +194,7 @@ export function WetlandField({
     if (pathRef.current) {
       pathRef.current.count = paths.length
       pathRef.current.instanceMatrix.needsUpdate = true
+      bindWorldCull(pathRef.current, params.worldSize)
     }
   })
 
@@ -184,7 +207,6 @@ export function WetlandField({
             refs.current[kind] = node
           }}
           args={[undefined, undefined, MAX[kind]]}
-          frustumCulled={false}
           raycast={() => {}}
         >
           {kind === 'aquatic' ? (
@@ -192,20 +214,20 @@ export function WetlandField({
           ) : kind === 'sedge' || kind === 'grass' ? (
             <coneGeometry args={[0.05, 0.16, 5]} />
           ) : (
-            <cylinderGeometry args={[0.01, 0.014, 0.4, 4]} />
+            <cylinderGeometry args={[0.008, 0.012, 0.42, 5]} />
           )}
-          <meshStandardMaterial color={KIND_COLOR[kind]} roughness={0.95} metalness={0} />
+          <meshStandardMaterial color={KIND_COLOR[kind]} roughness={0.96} metalness={0} />
         </instancedMesh>
       ))}
-      <instancedMesh ref={headRef} args={[undefined, undefined, 160]} frustumCulled={false} raycast={() => {}}>
+      <instancedMesh ref={headRef} args={[undefined, undefined, 160]} raycast={() => {}}>
         <sphereGeometry args={[1, 5, 4]} />
         <meshStandardMaterial color={headColor} roughness={0.92} />
       </instancedMesh>
-      <instancedMesh ref={shoreRef} args={[undefined, undefined, 220]} frustumCulled={false} raycast={() => {}}>
+      <instancedMesh ref={shoreRef} args={[undefined, undefined, 220]} raycast={() => {}}>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial color={shoreColor} roughness={0.98} />
       </instancedMesh>
-      <instancedMesh ref={pathRef} args={[undefined, undefined, 90]} frustumCulled={false} raycast={() => {}}>
+      <instancedMesh ref={pathRef} args={[undefined, undefined, 90]} raycast={() => {}}>
         <cylinderGeometry args={[1, 1, 1, 6]} />
         <meshStandardMaterial color={pathColor} roughness={0.97} />
       </instancedMesh>

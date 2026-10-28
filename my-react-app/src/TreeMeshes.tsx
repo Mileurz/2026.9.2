@@ -3,7 +3,7 @@ import { Quaternion, Vector3 } from 'three'
 import type { TreeKind } from './treeCatalog'
 
 const bark = { roughness: 0.94, metalness: 0.02 } as const
-const paper = { roughness: 0.98, metalness: 0, flatShading: true } as const
+const paper = { roughness: 0.92, metalness: 0 } as const
 const wood = { roughness: 0.72, metalness: 0.04 } as const
 const stem = '#8a8882'
 

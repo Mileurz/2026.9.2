@@ -93,6 +93,7 @@ export function seasonLabel(name: SeasonName) {
 }
 
 function fillSeason(state: SeasonState): SeasonState {
+  if (!Number.isFinite(state.year)) state.year = 0.68
   const phase = ((state.year % 1) + 1) % 1
   const spring = bump(phase, 0.14, 0.22)
   const summer = bump(phase, 0.4, 0.22)

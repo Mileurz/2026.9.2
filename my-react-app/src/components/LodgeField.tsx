@@ -6,14 +6,18 @@ import type { NoiseParams } from '../perlin'
 import type { ColonyState } from '../simulation/Colony'
 import { carveRiver, cappedWaterN, defaultHydro } from '../simulation/Hydrology'
 import type { LodgePiece, LodgePieceKind } from '../simulation/Lodge'
+import { LODGE_DRAW, bindWorldCull } from '../visual'
+
+/** Temporary instanced lodge mass. Replace later with a lodge GLB (chamber, sticks, mud plaster). */
 
 const dummy = new Object3D()
+const tint = new Color()
 const COLORS: Record<LodgePieceKind, Color> = {
-  stick: new Color('#7a5a38'),
-  branch: new Color('#5c442c'),
-  log: new Color('#3f2e20'),
-  mud: new Color('#5a4634'),
-  reed: new Color('#6a7a48'),
+  stick: new Color('#5c442c'),
+  branch: new Color('#4a3624'),
+  log: new Color('#322418'),
+  mud: new Color('#3e3228'),
+  reed: new Color('#5a6440'),
 }
 
 const KINDS: LodgePieceKind[] = ['stick', 'branch', 'log', 'mud', 'reed']
@@ -29,8 +33,9 @@ function lodgeY(
 ) {
   const raw = sampleHeightField(field, u, v)
   const n = carveRiver(raw, u, v, params.seaLevel)
+  const land = n * params.height
   const water = cappedWaterN(n, raw, u, v, hydro, params.seaLevel) * params.height
-  return water + lift * params.height
+  return Math.max(land, water) + lift * params.height
 }
 
 function posePiece(
@@ -51,7 +56,7 @@ function posePiece(
   } else {
     dummy.rotation.set(Math.PI * 0.5 + piece.pitch, piece.yaw, piece.roll)
   }
-  dummy.scale.set(piece.sx * fit, piece.sy * fit, piece.sz * fit)
+  dummy.scale.set(piece.sx * fit * LODGE_DRAW, piece.sy * fit * LODGE_DRAW, piece.sz * fit * LODGE_DRAW)
   dummy.updateMatrix()
 }
 
@@ -71,6 +76,7 @@ export function LodgeField({
     mud: null,
     reed: null,
   })
+  const finger = useRef('')
 
   useLayoutEffect(() => {
     for (const kind of KINDS) {
@@ -81,6 +87,9 @@ export function LodgeField({
 
   useFrame(() => {
     const lodge = colonyRef.current.lodge
+    const key = `${lodge?.pieces.length ?? 0}|${lodge?.stage ?? ''}|${(lodge?.size ?? 0).toFixed(3)}|${(colonyRef.current.hydro?.upstreamLevel ?? 0).toFixed(3)}`
+    if (key === finger.current) return
+    finger.current = key
     if (!lodge?.pieces?.length) {
       for (const kind of KINDS) {
         const mesh = refs.current[kind]
@@ -100,10 +109,17 @@ export function LodgeField({
       list.forEach((piece, i) => {
         posePiece(piece, params, field, fit, hydro)
         mesh?.setMatrixAt(i, dummy.matrix)
+        if (mesh) {
+          tint.copy(COLORS[kind])
+          tint.offsetHSL(0, 0, ((piece.yaw * 9) % 1) * 0.1 - 0.05)
+          mesh.setColorAt(i, tint)
+        }
       })
       if (mesh) {
         mesh.count = list.length
         mesh.instanceMatrix.needsUpdate = true
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+        bindWorldCull(mesh, params.worldSize)
       }
     }
   })
@@ -115,56 +131,56 @@ export function LodgeField({
           refs.current.stick = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
+        frustumCulled={true}
         castShadow
       >
-        <cylinderGeometry args={[1, 0.82, 1, 4]} />
-        <meshStandardMaterial color={COLORS.stick} roughness={0.94} />
+        <cylinderGeometry args={[1, 0.62, 1, 5]} />
+        <meshStandardMaterial color={COLORS.stick} roughness={0.97} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.branch = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
+        frustumCulled={true}
         castShadow
         receiveShadow
       >
-        <cylinderGeometry args={[1, 0.86, 1, 5]} />
-        <meshStandardMaterial color={COLORS.branch} roughness={0.92} />
+        <cylinderGeometry args={[1, 0.7, 1, 6]} />
+        <meshStandardMaterial color={COLORS.branch} roughness={0.95} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.log = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
+        frustumCulled={true}
         castShadow
         receiveShadow
       >
-        <cylinderGeometry args={[1, 0.9, 1, 6]} />
-        <meshStandardMaterial color={COLORS.log} roughness={0.9} />
+        <cylinderGeometry args={[1, 0.76, 1, 7]} />
+        <meshStandardMaterial color={COLORS.log} roughness={0.94} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.mud = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
+        frustumCulled={true}
         receiveShadow
       >
-        <sphereGeometry args={[1, 6, 5]} />
-        <meshStandardMaterial color={COLORS.mud} roughness={1} />
+        <sphereGeometry args={[1, 7, 6]} />
+        <meshStandardMaterial color={COLORS.mud} roughness={0.8} metalness={0} envMapIntensity={0.14} />
       </instancedMesh>
       <instancedMesh
         ref={(node) => {
           refs.current.reed = node
         }}
         args={[undefined, undefined, MAX]}
-        frustumCulled={false}
+        frustumCulled={true}
       >
-        <cylinderGeometry args={[0.45, 1, 1, 4]} />
-        <meshStandardMaterial color={COLORS.reed} roughness={0.96} />
+        <cylinderGeometry args={[0.38, 1, 1, 5]} />
+        <meshStandardMaterial color={COLORS.reed} roughness={0.97} metalness={0} />
       </instancedMesh>
     </group>
   )

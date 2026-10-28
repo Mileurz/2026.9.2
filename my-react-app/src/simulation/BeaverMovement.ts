@@ -20,6 +20,7 @@ import {
   trailSteer,
 } from './Territory'
 import { colonyStorage, ensureKnobs, fitColonyToLand, type ColonyState } from './Colony'
+import { ensureHistory, recordTimeline } from './Timeline'
 import {
   damWorkSlot,
   emptyDam,
@@ -41,7 +42,6 @@ import {
   localWaterN,
   riverCenter,
   riverDistance,
-  riverMask,
   stepHydrology,
   type HydroState,
 } from './Hydrology'
@@ -52,6 +52,7 @@ import {
   emptyForest,
   findBranch,
   findTree,
+  indexForest,
   isBranchBuildable,
   isTreeValidTarget,
   pickBuildingBranch,
@@ -98,7 +99,7 @@ export function sampleBeaverGround(world: BeaverWorld, u: number, v: number) {
   const n = carveRiver(sampleHeightField(world.field, u, v), u, v, sea)
   const hydro = world.hydro ?? defaultHydro
   const water = localWaterN(u, v, hydro, sea)
-  const inRiver = isInundated(n, u, v, hydro, sea) || riverMask(u, v, sea) > 0.42 || n < water + 0.006
+  const inRiver = isInundated(n, u, v, hydro, sea)
   return { n, inRiver, water }
 }
 
@@ -111,15 +112,19 @@ function slope(world: BeaverWorld, u: number, v: number) {
   return Math.hypot(b - a, d - c) / (e * 2)
 }
 
-function walkable(world: BeaverWorld, u: number, v: number) {
+function walkable(world: BeaverWorld, u: number, v: number, loose = false) {
   if (u < 0.04 || u > 0.96 || v < 0.04 || v > 0.96) return false
   const steep = slope(world, u, v)
-  if (steep > 8.4) return false
+  if (steep > (loose ? 26 : 11.5)) return false
   const g = sampleBeaverGround(world, u, v)
   const sea = world.params.seaLevel
   if (g.n < sea - 0.035 && !g.inRiver) return false
-  if (g.n > 0.8 && steep > 4.2) return false
+  if (g.n > 0.55 && steep > (loose ? 8 : 5.5)) return false
   return true
+}
+
+function landJob(task: BeaverTask) {
+  return task === 'MOVE_TO_TREE' || task === 'CHEW_TREE' || task === 'COLLECT_BRANCH' || task === 'MOVE_TO_BRANCH'
 }
 
 function denSlot(b: BeaverAgent, home: { u: number; v: number }) {
@@ -160,11 +165,11 @@ function separateBeavers(colony: ColonyState, world: BeaverWorld) {
         const av = clamp(a.v + ny * push, 0.05, 0.95)
         const bu = clamp(b.u - nx * push, 0.05, 0.95)
         const bv = clamp(b.v - ny * push, 0.05, 0.95)
-        if (walkable(world, au, av)) {
+        if (walkable(world, au, av, true)) {
           a.u = au
           a.v = av
         }
-        if (walkable(world, bu, bv)) {
+        if (walkable(world, bu, bv, true)) {
           b.u = bu
           b.v = bv
         }
@@ -182,7 +187,8 @@ function separateBeavers(colony: ColonyState, world: BeaverWorld) {
 }
 
 function recoverBeaver(b: BeaverAgent, world: BeaverWorld, den: { u: number; v: number }) {
-  if (walkable(world, b.u, b.v)) return
+  if (landJob(b.currentTask) || b.carrying || b.currentTask === 'CHEW_TREE') return
+  if (walkable(world, b.u, b.v, true)) return
   const c = riverCenter(b.u)
   const tries = [
     { u: b.u, v: clamp(b.v + Math.sign(c - b.v) * 0.02, 0.06, 0.94) },
@@ -246,7 +252,8 @@ function phaseBump(t: number, center: number, width: number) {
 }
 
 /** Nocturnal and crepuscular; winter bouts drift off the 24-hour clock. */
-function nightActive(days: number, winter: number, id: string) {
+function nightActive(days: number, winter: number, id: string, speed = 1) {
+  if (speed >= 20) return 0.82
   const t = dayFrac(days)
   const dusk = phaseBump(t, 0.8, 0.15)
   const dawn = phaseBump(t, 0.22, 0.12)
@@ -264,11 +271,11 @@ function viaWater(
   const here = sampleBeaverGround(world, from.u, from.v)
   const land = Math.hypot(dest.u - from.u, dest.v - from.v)
   const toWater = riverDistance(from.u, from.v)
-  if (!here.inRiver && toWater > 0.016 && land > 0.022) {
+  const along = Math.abs(dest.u - from.u)
+  if (!here.inRiver && toWater > 0.022 && land > 0.04 && along > 0.05 && toWater < land * 0.65) {
     return { u: clamp(from.u, 0.1, 0.9), v: clamp(riverCenter(from.u), 0.08, 0.92) }
   }
-  const along = Math.abs(dest.u - from.u)
-  if ((here.inRiver || toWater < 0.022) && along > 0.02) {
+  if ((here.inRiver || toWater < 0.018) && along > 0.028) {
     const u = clamp(from.u + Math.sign(dest.u - from.u) * Math.min(along, 0.16), 0.1, 0.9)
     return { u, v: clamp(riverCenter(u), 0.08, 0.92) }
   }
@@ -309,7 +316,7 @@ function committedTree(b: BeaverAgent, colony: ColonyState) {
   return undefined
 }
 
-function assignTree(b: BeaverAgent, colony: ColonyState) {
+function assignTree(b: BeaverAgent, colony: ColonyState, world: BeaverWorld) {
   const held = committedTree(b, colony)
   if (held && isTreeValidTarget(held)) {
     if (b.currentTask !== 'MOVE_TO_TREE' && b.currentTask !== 'CHEW_TREE') {
@@ -403,6 +410,15 @@ function chooseCarryGoal(b: BeaverAgent, colony: ColonyState): 'dam' | 'lodge' |
   const cache = colony.season?.cache ?? 0
   const build = colony.season?.build ?? 1
   if (!colony.willDam) return cache > 0.4 ? 'cache' : 'lodge'
+  if (
+    colony.dam.pieces.length >= 4 &&
+    colony.lodge.locked &&
+    colony.lodge.stage !== 'MATURE_LODGE' &&
+    colony.lodge.pieces.length < 10 &&
+    hash(b.id, 25) > 0.48
+  ) {
+    return 'lodge'
+  }
   if (colony.dam.completion < 0.82 && build > 0.16) {
     if (colony.dam.pieces.length < 8) return 'dam'
     if (b.lifeStage !== 'kit' && hash(b.id, 21) < 0.78) return 'dam'
@@ -426,6 +442,7 @@ function haulSite(colony: ColonyState, goal: 'dam' | 'lodge' | 'cache' | null, b
 }
 
 function haulDest(b: BeaverAgent, world: BeaverWorld, colony: ColonyState) {
+  if (!b.carrying || !b.carryGoal) b.carryGoal = chooseCarryGoal(b, colony)
   const goal = b.carryGoal ?? chooseCarryGoal(b, colony)
   b.carryGoal = goal
   return carryDestination(b, world, haulSite(colony, goal, b.id))
@@ -450,7 +467,7 @@ function chooseTask(
   const roam = roamFor(b)
   const season = colony.season
   const winter = season?.winter ?? 0
-  const active = nightActive(colony.clock?.days ?? 0, winter, b.id)
+  const active = nightActive(colony.clock?.days ?? 0, winter, b.id, colony.clock?.speed ?? 1)
   const resident = (b.status ?? 'resident') === 'resident'
 
   if (b.carrying) {
@@ -480,11 +497,7 @@ function chooseTask(
     return
   }
   if (b.energy < 0.3) {
-    if (!resident) {
-      setTask(b, 'REST', b.u, b.v)
-      return
-    }
-    sendHome(b, colony, world)
+    setTask(b, 'REST', b.u, b.v)
     return
   }
   if ((b.status ?? 'resident') === 'dispersing') {
@@ -506,7 +519,7 @@ function chooseTask(
       return
     }
     if (canChew(b) && b.hunger > 0.62) {
-      if (!assignTree(b, colony)) setTask(b, 'REST', b.homeLocation.u, b.homeLocation.v)
+      if (!assignTree(b, colony, world)) setTask(b, 'REST', b.homeLocation.u, b.homeLocation.v)
       return
     }
     const p = pickShore(b, salt)
@@ -563,7 +576,7 @@ function chooseTask(
       setTask(b, 'FIND_BUILDING_MATERIAL', b.u, b.v)
       return
     }
-    if (canChew(b) && assignTree(b, colony)) return
+    if (canChew(b) && assignTree(b, colony, world)) return
   }
   if (
     resident &&
@@ -584,7 +597,7 @@ function chooseTask(
     b.currentTask !== 'CHEW_TREE' &&
     b.currentTask !== 'FIND_TREE'
   ) {
-    if (!assignTree(b, colony)) setTask(b, 'FIND_TREE', b.u, b.v)
+    if (!assignTree(b, colony, world)) setTask(b, 'FIND_TREE', b.u, b.v)
     return
   }
   if (winter > 0.4 && b.hunger > 0.42 && colony.storage) {
@@ -655,7 +668,7 @@ function chooseTask(
   }
   if (b.currentTask === 'SWIM') {
     if (b.hunger > 0.4 && canChew(b)) {
-      if (!assignTree(b, colony)) setTask(b, 'FIND_TREE', b.u, b.v)
+      if (!assignTree(b, colony, world)) setTask(b, 'FIND_TREE', b.u, b.v)
     } else {
       const p = pickShore(b, salt + 5)
       setTask(b, 'EXPLORE_SHORE', p.u, p.v)
@@ -672,7 +685,7 @@ function arrive(b: BeaverAgent, world: BeaverWorld, colony: ColonyState, partner
       const wait =
         (b.lifeStage === 'kit' ? 14 : 7) +
         hash(b.id, 11) * 5 +
-        (nightActive(colony.clock?.days ?? 0, colony.season?.winter ?? 0, b.id) < 0.38 ? 16 : 0)
+        (nightActive(colony.clock?.days ?? 0, colony.season?.winter ?? 0, b.id, colony.clock?.speed ?? 1) < 0.38 ? 16 : 0)
       if (b.taskAge > wait) chooseTask(b, world, colony, partner, salt)
       break
     }
@@ -681,7 +694,7 @@ function arrive(b: BeaverAgent, world: BeaverWorld, colony: ColonyState, partner
       chooseTask(b, world, colony, partner, salt + 1)
       break
     case 'FIND_TREE':
-      if (!assignTree(b, colony)) {
+      if (!assignTree(b, colony, world)) {
         const p = pickShore(b, salt)
         setTask(b, 'EXPLORE_SHORE', p.u, p.v)
       }
@@ -690,8 +703,8 @@ function arrive(b: BeaverAgent, world: BeaverWorld, colony: ColonyState, partner
       const tree = committedTree(b, colony)
       if (!tree || !isTreeValidTarget(tree)) {
         b.targetTreeId = null
-        if (!assignTree(b, colony)) setTask(b, 'RETURN_HOME', b.homeLocation.u, b.homeLocation.v)
-      } else {
+        if (!assignTree(b, colony, world)) setTask(b, 'RETURN_HOME', b.homeLocation.u, b.homeLocation.v)
+      } else if (dist(b, tree.position.u, tree.position.v) < 0.028) {
         setTask(b, 'CHEW_TREE', b.u, b.v)
       }
       break
@@ -746,7 +759,7 @@ function arrive(b: BeaverAgent, world: BeaverWorld, colony: ColonyState, partner
         b.energy = clamp(b.energy - 0.04, 0.05, 1)
         b.carryGoal = damBusy(colony) ? 'dam' : b.carryGoal
         if (!assignBuilding(b, colony)) {
-          if (damBusy(colony) && assignTree(b, colony)) break
+          if (damBusy(colony) && assignTree(b, colony, world)) break
           const p = pickShore(b, salt)
           setTask(b, 'EXPLORE_SHORE', p.u, p.v)
         }
@@ -797,8 +810,12 @@ function arrive(b: BeaverAgent, world: BeaverWorld, colony: ColonyState, partner
   }
 }
 
-function tryStep(world: BeaverWorld, u: number, v: number) {
-  return walkable(world, u, v)
+function tryStep(world: BeaverWorld, u: number, v: number, loose = false) {
+  if (!loose) return walkable(world, u, v, false)
+  if (u < 0.04 || u > 0.96 || v < 0.04 || v > 0.96) return false
+  const g = sampleBeaverGround(world, u, v)
+  if (g.inRiver) return true
+  return g.n < 0.52
 }
 
 export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: number, motionDt = simDt) {
@@ -813,15 +830,19 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
   if (!colony.season) colony.season = emptySeason()
   colony.clock = ensureClock(colony.clock ?? emptyClock())
   colony.knobs = ensureKnobs(colony.knobs)
+  colony.history = ensureHistory(colony)
   if (colony.woodCollected === undefined) colony.woodCollected = 0
+  if (colony.history.viewingId) return
   if (simDt <= 0 && motionDt <= 0) return
   syncForest(colony.forest, world.seedTrees, world.params)
+  indexForest(colony.forest, true)
   const prevHome = { u: colony.home.u, v: colony.home.v }
   stepSeasonFromDays(colony.season, colony.clock.days)
   applySeasonKnobs(colony.season, colony.knobs)
   const seated = fitColonyToLand(colony, world.field, world.params)
   const eco = Math.min(8, Math.max(0, simDt))
   const vis = Math.min(0.04, Math.max(0, motionDt))
+  const work = Math.min(0.55, vis + eco)
   if (eco > 0) {
     stepHydrology(colony.hydro, colony.dam, world.field, world.params, eco, colony.season.flow, colony.knobs.water)
   }
@@ -854,20 +875,49 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     if (b.status === 'resident') b.homeLocation = denSlot(b, home)
     recoverBeaver(b, world, b.status === 'resident' ? b.homeLocation : home)
     if (
-      !walkable(world, b.u, b.v) &&
+      !walkable(world, b.u, b.v, true) &&
       b.status === 'resident' &&
       b.currentTask !== 'RETURN_HOME' &&
+      !landJob(b.currentTask) &&
       !b.carrying
     ) {
       setTask(b, 'RETURN_HOME', b.homeLocation.u, b.homeLocation.v)
     }
-    b.taskAge += vis
-    b.energy = clamp(b.energy - vis * 0.012 + (b.currentTask === 'REST' ? vis * 0.05 : 0), 0.05, 1)
+    b.taskAge += work
+    b.energy = clamp(
+      b.energy - vis * 0.008 + (b.currentTask === 'REST' ? vis * 0.14 : 0),
+      0.05,
+      1,
+    )
     b.hunger = clamp(b.hunger + vis * 0.018, 0, 1)
 
     const partner = colony.beavers.find((o) => o.id === b.partner)
     const salt = Math.floor(b.taskAge * 2) + (b.id.length * 17)
 
+    if (
+      b.energy < 0.28 &&
+      !b.carrying &&
+      b.currentTask !== 'REST' &&
+      b.currentTask !== 'CHEW_TREE'
+    ) {
+      setTask(b, 'REST', b.u, b.v)
+    }
+    if (
+      (b.currentTask === 'MOVE_TO_TREE' || b.currentTask === 'COLLECT_BRANCH') &&
+      b.taskAge > 28 &&
+      b.speed < 0.0008 &&
+      dist(b, b.targetU, b.targetV) > 0.025
+    ) {
+      b.targetTreeId = null
+      b.targetBranchId = null
+      chooseTask(b, world, colony, partner, salt + 3)
+    }
+
+    if (!b.carrying && (b.status ?? 'resident') === 'resident' && canDisperse(b, colony)) {
+      beginDispersal(b, colony)
+      const u = clamp(b.u + b.dispersalSign * 0.055, 0.12, 0.88)
+      setTask(b, 'DISPERSE_ALONG_WATER', u, riverCenter(u))
+    }
     if (b.lifeStage === 'kit' && (b.status ?? 'resident') === 'resident' && b.age < 0.17 && !b.carrying) {
       sendHome(b, colony, world)
     }
@@ -886,14 +936,17 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     }
 
     if (b.currentTask === 'FIND_TREE') {
-      if (!assignTree(b, colony)) {
+      if (!assignTree(b, colony, world)) {
         const p = pickShore(b, salt)
         setTask(b, 'EXPLORE_SHORE', p.u, p.v)
       }
     }
     if (b.currentTask === 'FIND_BRANCH' || b.currentTask === 'FIND_BUILDING_MATERIAL') {
-      if (!assignBuilding(b, colony) && b.taskAge > 2.8) {
-        if (damBusy(colony) && canChew(b) && assignTree(b, colony)) {
+      const felled = findTree(colony.forest, b.targetTreeId)
+      const waitingFall =
+        !!felled && (felled.currentState === 'FALLING' || (felled.chewProgress >= 1 && !felled.branched))
+      if (!assignBuilding(b, colony) && !waitingFall && b.taskAge > 2.8) {
+        if (damBusy(colony) && canChew(b) && assignTree(b, colony, world)) {
           b.carryGoal = 'dam'
         } else {
           const p = pickShore(b, salt)
@@ -905,11 +958,18 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     if (
       b.currentTask === 'REST' &&
       b.status === 'resident' &&
+      b.energy > 0.42 &&
       dist(b, b.homeLocation.u, b.homeLocation.v) > 0.022
     ) {
-      sendHome(b, colony, world)
+      const tree = committedTree(b, colony)
+      if (tree && isTreeValidTarget(tree)) {
+        const stand = approachPoint(tree, { u: b.u, v: b.v })
+        setTask(b, 'MOVE_TO_TREE', stand.u, stand.v)
+      } else {
+        chooseTask(b, world, colony, partner, salt + 2)
+      }
     }
-    const awake = nightActive(colony.clock.days, colony.season?.winter ?? 0, b.id)
+    const awake = nightActive(colony.clock.days, colony.season?.winter ?? 0, b.id, colony.clock.speed)
     const damJob =
       b.carryGoal === 'dam' ||
       b.currentTask === 'BUILD_DAM' ||
@@ -935,19 +995,19 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
       const tree = committedTree(b, colony)
       if (!tree || (!isTreeValidTarget(tree) && tree.chewProgress < 1)) {
         b.targetTreeId = null
-        if (!assignTree(b, colony)) setTask(b, 'RETURN_HOME', b.homeLocation.u, b.homeLocation.v)
+        if (!assignTree(b, colony, world)) setTask(b, 'RETURN_HOME', b.homeLocation.u, b.homeLocation.v)
       } else if (b.currentTask === 'CHEW_TREE' && isTreeValidTarget(tree)) {
-        chewTree(tree, vis, b.energy)
+        chewTree(tree, work, b.energy)
         b.hunger = clamp(b.hunger - vis * 0.045, 0, 1)
         b.energy = clamp(b.energy - vis * 0.018, 0.05, 1)
         const face = Math.atan2(tree.position.u - b.u, tree.position.v - b.v)
         b.heading = wrapAngle(b.heading + clamp(wrapAngle(face - b.heading), -1.8 * vis, 1.8 * vis))
         if (tree.chewProgress >= 1) {
-          if (damBusy(colony)) b.carryGoal = 'dam'
+          b.carryGoal = null
           setTask(b, 'FIND_BUILDING_MATERIAL', b.u, b.v)
         }
       } else if (b.currentTask === 'CHEW_TREE' && tree.chewProgress >= 1) {
-        if (damBusy(colony)) b.carryGoal = 'dam'
+        b.carryGoal = null
         setTask(b, 'FIND_BUILDING_MATERIAL', b.u, b.v)
       }
     }
@@ -975,7 +1035,7 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
         }
         b.carrying = false
         b.targetBranchId = null
-        b.carryGoal = 'dam'
+        b.carryGoal = null
         setTask(b, 'DAM_MAINTENANCE', slot.u, slot.v)
       } else if (!b.carrying && b.taskAge > 0.5) {
         setTask(b, 'DAM_MAINTENANCE', slot.u, slot.v)
@@ -1063,17 +1123,21 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     if (b.currentTask === 'MOVE_TO_TREE') {
       const tree = committedTree(b, colony)
       if (tree) {
-        const p = viaWater(b, approachPoint(tree, { u: b.u, v: b.v }), world)
-        b.targetU = p.u
-        b.targetV = p.v
+        const stand = approachPoint(tree, { u: b.u, v: b.v })
+        if (dist(b, tree.position.u, tree.position.v) < 0.026 || dist(b, stand.u, stand.v) < 0.012) {
+          setTask(b, 'CHEW_TREE', b.u, b.v)
+        } else {
+          b.targetU = stand.u
+          b.targetV = stand.v
+        }
       }
     }
     if (b.currentTask === 'COLLECT_BRANCH' || b.currentTask === 'MOVE_TO_BRANCH') {
       const branch = committedBranch(b, colony)
       if (branch) {
-        const p = viaWater(b, approachBranch(branch, { u: b.u, v: b.v }), world)
-        b.targetU = p.u
-        b.targetV = p.v
+        const stand = approachBranch(branch, { u: b.u, v: b.v })
+        b.targetU = stand.u
+        b.targetV = stand.v
       }
     }
     if (b.currentTask === 'RETURN_HOME') {
@@ -1094,7 +1158,28 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     }
 
     const here = sampleBeaverGround(world, b.u, b.v)
-    const damSlot = damWorkSlot(colony.dam, b.id, 3)
+    const restingHome =
+      b.currentTask === 'REST' &&
+      !b.carrying &&
+      dist(b, b.homeLocation.u, b.homeLocation.v) < 0.022
+    if (restingHome) {
+      b.speed = lerp(b.speed, 0, 1 - Math.exp(-3.8 * vis))
+      if (b.speed < 0.0015) b.speed = 0
+      const inChamber =
+        colony.lodge.chamberDry && dist(b, colony.lodge.siteU, colony.lodge.siteV) < 0.02
+      b.wet = lerp(
+        b.wet,
+        inChamber ? 0.12 : here.inRiver ? 1 : 0,
+        1 - Math.exp(-(inChamber || here.inRiver ? 2.8 : 0.55) * vis),
+      )
+      b.position.u = b.u
+      b.position.v = b.v
+      continue
+    }
+    const damSlot =
+      b.currentTask === 'BUILD_DAM' || b.currentTask === 'DAM_MAINTENANCE'
+        ? damWorkSlot(colony.dam, b.id, 3)
+        : { u: b.u, v: b.v }
     const atDamWork =
       (b.currentTask === 'BUILD_DAM' || b.currentTask === 'DAM_MAINTENANCE') &&
       dist(b, damSlot.u, damSlot.v) < 0.018
@@ -1117,28 +1202,26 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     const center = riverCenter(b.u)
     const nearLodge =
       b.status === 'resident' && colony.lodge.locked && dist(b, colony.lodge.siteU, colony.lodge.siteV) < 0.04
-    const onLandJob =
-      b.currentTask === 'MOVE_TO_TREE' ||
-      b.currentTask === 'CHEW_TREE' ||
-      b.currentTask === 'COLLECT_BRANCH'
+    const onLandJob = landJob(b.currentTask)
     const waterTravel =
-      here.inRiver ||
-      b.carrying ||
-      b.currentTask === 'SWIM' ||
-      b.currentTask === 'DISPERSE_ALONG_WATER' ||
-      (b.currentTask === 'RETURN_HOME' && farGoal > 0.02) ||
-      (!onLandJob && riverDistance(b.u, b.v) > 0.018)
+      !onLandJob &&
+      (here.inRiver ||
+        b.carrying ||
+        b.currentTask === 'SWIM' ||
+        b.currentTask === 'DISPERSE_ALONG_WATER' ||
+        (b.currentTask === 'RETURN_HOME' && farGoal > 0.02) ||
+        riverDistance(b.u, b.v) > 0.018)
     if (waterTravel && !nearLodge) {
       toV += (center - b.v) * 2.05
     }
-    if (!here.inRiver && onLandJob && colony.territory) {
+    if (!here.inRiver && !onLandJob && colony.territory) {
       const slide = trailSteer(colony.territory, b.u, b.v)
       toU += slide.u * 1.6
       toV += slide.v * 1.6
     }
 
     const far = Math.hypot(toU, toV)
-    if (moving && far < 0.012) {
+    if (moving && farGoal < 0.012) {
       const site = haulSite(colony, b.carryGoal, b.id)
       const hauling = b.currentTask === 'CARRY_TO_STORAGE' || b.currentTask === 'TRANSPORT_BRANCH'
       if (!hauling || Math.hypot(b.u - site.u, b.v - site.v) < 0.018) {
@@ -1156,7 +1239,7 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     b.heading = wrapAngle(b.heading + clamp(dh, -turn * vis, turn * vis))
 
     const aligned = 1 - clamp(Math.abs(wrapAngle(wantHeading - b.heading)) / 1.15, 0, 1)
-    const arriveSlow = moving ? clamp(far / 0.038, 0, 1) : 0
+    const arriveSlow = moving ? clamp(farGoal / 0.028, 0.22, 1) : 0
     const swim = here.inRiver || b.currentTask === 'SWIM' || (b.carrying && riverDistance(b.u, b.v) < 0.035)
     const load = findBranch(colony.forest, b.targetBranchId)
     const burden = b.carrying && load ? 1 / (1 + load.length * 1.7 + load.woodAmount * 0.35) : 1
@@ -1168,31 +1251,61 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
       stageSpeed(b.lifeStage ?? 'adult') *
       (0.42 + 0.58 * (colony.season?.activity ?? 1)) *
       (0.55 + 0.45 * awake)
-    const targetSpeed = !moving ? 0 : cruise * Math.max(0.12, aligned) * arriveSlow
+    const targetSpeed = !moving ? 0 : cruise * Math.max(0.35, aligned) * arriveSlow
     const accel = moving ? 1.6 : 3.8
     b.speed = lerp(b.speed, targetSpeed, 1 - Math.exp(-accel * vis))
-    if (b.speed < 0.0015) b.speed = 0
+    if (moving && targetSpeed > 0.004 && b.speed < 0.01) b.speed = Math.max(b.speed, 0.012)
+    if (b.speed < 0.0002) b.speed = 0
 
-    if (moving && b.speed > 0.002) {
+    if (moving && b.speed > 0.0003) {
       const step = b.speed * vis
+      const loose = onLandJob
       const nu = b.u + Math.sin(b.heading) * step
       const nv = b.v + Math.cos(b.heading) * step
-      if (tryStep(world, nu, nv)) {
+      if (tryStep(world, nu, nv, loose)) {
         b.u = clamp(nu, 0.05, 0.95)
         b.v = clamp(nv, 0.05, 0.95)
       } else {
         const alongU = clamp(b.u + Math.sin(b.heading) * step, 0.05, 0.95)
-        const towardRiver = b.v + Math.sign(center - b.v) * step * 0.8
-        if (tryStep(world, alongU, b.v)) b.u = alongU
-        else if (tryStep(world, b.u, clamp(towardRiver, 0.05, 0.95))) {
-          b.v = clamp(towardRiver, 0.05, 0.95)
-        } else {
-          b.speed *= 0.35
+        const alongV = clamp(b.v + Math.cos(b.heading) * step, 0.05, 0.95)
+        const goalU = clamp(b.u + Math.sign(b.targetU - b.u) * step, 0.05, 0.95)
+        const goalV = clamp(b.v + Math.sign(b.targetV - b.v) * step, 0.05, 0.95)
+        const preferV = Math.abs(b.targetV - b.v) >= Math.abs(b.targetU - b.u)
+        const axis = preferV
+          ? [
+              [b.u, alongV],
+              [b.u, goalV],
+              [alongU, b.v],
+              [goalU, b.v],
+            ]
+          : [
+              [alongU, b.v],
+              [goalU, b.v],
+              [b.u, alongV],
+              [b.u, goalV],
+            ]
+        let stepped = false
+        for (const [su, sv] of axis) {
+          if (!tryStep(world, su, sv, loose)) continue
+          b.u = su
+          b.v = sv
+          stepped = true
+          break
+        }
+        if (!stepped) {
+          const climbU = clamp(b.u + Math.sin(b.heading) * step * 0.55, 0.05, 0.95)
+          const climbV = clamp(b.v + Math.cos(b.heading) * step * 0.55, 0.05, 0.95)
+          if (tryStep(world, climbU, climbV, true)) {
+            b.u = climbU
+            b.v = climbV
+          } else {
+            b.speed *= 0.35
+          }
         }
       }
     }
 
-    const wetNow = sampleBeaverGround(world, b.u, b.v).inRiver
+    const wetNow = moving ? sampleBeaverGround(world, b.u, b.v).inRiver : here.inRiver
     const inChamber =
       colony.lodge.chamberDry &&
       b.currentTask === 'REST' &&
@@ -1200,12 +1313,13 @@ export function stepColony(colony: ColonyState, world: BeaverWorld, simDt: numbe
     b.wet = lerp(b.wet, inChamber ? 0.12 : wetNow ? 1 : 0, 1 - Math.exp(-(inChamber || wetNow ? 2.8 : 0.55) * vis))
     b.position.u = b.u
     b.position.v = b.v
-    recordTrail(colony.territory, b.u, b.v)
+    if (moving) recordTrail(colony.territory, b.u, b.v)
   }
   separateBeavers(colony, world)
-  stepTrails(colony.territory, vis)
-  stepSuccession(colony, world.field, world.params, eco)
+  if (vis > 0) stepTrails(colony.territory, vis)
+  if (eco > 0) stepSuccession(colony, world.field, world.params, eco)
   stepWildlife(colony, world.field, world.params, eco, vis)
-  stepPopulation(colony, eco, vis)
-  stepForest(colony.forest, vis, eco * colony.knobs.regen, colony.season)
+  if (eco > 0) stepPopulation(colony, eco, vis)
+  if (vis > 0 || eco > 0) stepForest(colony.forest, work, eco * colony.knobs.regen, colony.season)
+  if (eco > 0) recordTimeline(colony)
 }

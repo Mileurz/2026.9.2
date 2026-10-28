@@ -65,15 +65,15 @@ export function emptyDam(): DamState {
   }
 }
 
-function channelHalf(field: HeightField, params: NoiseParams, u: number) {
+export function channelHalf(field: HeightField, params: NoiseParams, u: number) {
   const c = riverCenter(u)
   const sea = params.seaLevel
   const water = baseWaterLevelN()
   let half = riverHalfWidth(sea)
-  for (let s = 0.008; s < 0.13; s += 0.004) {
+  for (let s = 0.006; s < 0.12; s += 0.003) {
     const nL = carveRiver(sampleHeightField(field, u, clamp(c - s, 0.05, 0.95)), u, c - s, sea)
     const nR = carveRiver(sampleHeightField(field, u, clamp(c + s, 0.05, 0.95)), u, c + s, sea)
-    if (nL > water + 0.016 && nR > water + 0.016) {
+    if (nL >= water + 0.006 && nR >= water + 0.006) {
       half = s
       break
     }
@@ -105,7 +105,7 @@ export function damSiteFits(
   if (Math.abs(dam.siteV - c) > 0.055) return false
   if (Math.abs(dam.siteU - home.u) > 0.22) return false
   const half = channelHalf(field, params, dam.siteU)
-  if (half > 0.092 || half < 0.01) return false
+  if (half > 0.135 || half < 0.008) return false
   const n = carveRiver(sampleHeightField(field, dam.siteU, c), dam.siteU, c, params.seaLevel)
   if (n > baseWaterLevelN() + 0.02) return false
   if (slopeAt(field, dam.siteU, c) > 9.2) return false
@@ -119,9 +119,12 @@ export function habitatDamScore(
   home: { u: number; v: number },
 ) {
   const flow = riverDownstreamSign()
-  const u = clamp(home.u + flow * 0.03, 0.2, 0.8)
-  const half = channelHalf(field, params, u)
-  return clamp(1 - (half - 0.018) / 0.09, 0, 1)
+  let best = 1
+  for (let k = 0; k < 16; k += 1) {
+    const u = clamp(home.u + flow * (0.018 + k * 0.007), 0.2, 0.8)
+    best = Math.min(best, channelHalf(field, params, u))
+  }
+  return clamp(1 - (best - 0.016) / 0.14, 0, 1)
 }
 
 export function ensureDamSite(
@@ -173,7 +176,7 @@ function refreshMetrics(dam: DamState, field: HeightField, params: NoiseParams) 
   }
   const half = channelHalf(field, params, dam.siteU)
   const m = dam.materialAmount
-  dam.completion = 1 - Math.exp(-m / 4.6)
+  dam.completion = 1 - Math.exp(-m / 3.1)
   dam.length = 0.038 + dam.completion * Math.min(0.15, half * 2.25)
   dam.height = 0.028 + dam.completion * 0.11
   dam.thickness = 0.014 + dam.completion * 0.048
@@ -270,7 +273,7 @@ export function placeBranchOnDam(
     sy: kind === 'log' ? 0.09 + branch.length * 0.28 : 0.07 + branch.length * 0.24,
     sz: kind === 'log' ? 0.018 : 0.012,
   })
-  dam.materialAmount += branch.woodAmount
+  dam.materialAmount += Math.max(0.16, branch.woodAmount * 3.2)
   branch.inDam = true
   branch.carriedBy = null
   branch.availability = false
@@ -295,7 +298,7 @@ export function placeBranchOnDam(
       sy: 0.012 + hash(key, 33) * 0.01,
       sz: 0.02 + hash(key, 34) * 0.012,
     })
-    dam.materialAmount += 0.05
+    dam.materialAmount += 0.08
     refreshMetrics(dam, field, params)
   }
 }

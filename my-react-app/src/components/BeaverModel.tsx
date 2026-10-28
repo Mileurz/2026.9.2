@@ -19,13 +19,14 @@ export type BeaverVisual = {
   branchLength: number
 }
 
-const dryFur = new Color('#5a3d28')
-const wetFur = new Color('#2c1c14')
+const dryFur = new Color('#4a3224')
+const wetFur = new Color('#241610')
+const paleFur = new Color('#6a5340')
 
 function CarriedBranch({ visual }: { visual: MutableRefObject<BeaverVisual> }) {
   const stick = useRef<Group>(null)
   const wood = useMemo(
-    () => new MeshStandardMaterial({ color: '#c4a06a', roughness: 0.82, metalness: 0.03 }),
+    () => new MeshStandardMaterial({ color: '#5a402c', roughness: 0.94, metalness: 0 }),
     [],
   )
   useFrame(() => {
@@ -38,7 +39,7 @@ function CarriedBranch({ visual }: { visual: MutableRefObject<BeaverVisual> }) {
   return (
     <group ref={stick} position={[0.006, -0.002, 0.046]} rotation={[1.08, 0.16, 0.2]} visible={false}>
       <mesh position={[0, 0.48, 0]} material={wood} castShadow>
-        <cylinderGeometry args={[0.0065, 0.0085, 1, 6]} />
+        <cylinderGeometry args={[0.005, 0.0075, 1, 6]} />
       </mesh>
     </group>
   )
@@ -87,22 +88,22 @@ function ProceduralBeaver({ visual }: { visual: MutableRefObject<BeaverVisual> }
     () =>
       new MeshStandardMaterial({
         color: dryFur.clone(),
-        roughness: 0.96,
+        roughness: 0.98,
         metalness: 0,
-        envMapIntensity: 0.28,
+        envMapIntensity: 0.12,
       }),
     [],
   )
   const muzzleMat = useMemo(
-    () => new MeshStandardMaterial({ color: '#3a281c', roughness: 0.9, metalness: 0 }),
+    () => new MeshStandardMaterial({ color: '#2e2018', roughness: 0.94, metalness: 0 }),
     [],
   )
   const tailMat = useMemo(
-    () => new MeshStandardMaterial({ color: '#2a221a', roughness: 0.78, metalness: 0.04 }),
+    () => new MeshStandardMaterial({ color: '#1c1814', roughness: 0.62, metalness: 0.02, envMapIntensity: 0.22 }),
     [],
   )
   const eyeMat = useMemo(
-    () => new MeshStandardMaterial({ color: '#0c0a09', roughness: 0.22, metalness: 0.08 }),
+    () => new MeshStandardMaterial({ color: '#0a0807', roughness: 0.28, metalness: 0.04 }),
     [],
   )
   const noseMat = useMemo(
@@ -110,19 +111,29 @@ function ProceduralBeaver({ visual }: { visual: MutableRefObject<BeaverVisual> }
     [],
   )
   const pawMat = useMemo(
-    () => new MeshStandardMaterial({ color: '#3a2a20', roughness: 0.88, metalness: 0 }),
+    () => new MeshStandardMaterial({ color: '#2c2018', roughness: 0.92, metalness: 0 }),
     [],
   )
+  const bellyMat = useMemo(
+    () => new MeshStandardMaterial({ color: paleFur.clone(), roughness: 0.98, metalness: 0, envMapIntensity: 0.08 }),
+    [],
+  )
+
+  const idle = useRef(false)
+  const lastWet = useRef(-1)
 
   useFrame((_, dt) => {
     const v = visual.current
     const swim = v.pose === 'swim'
     const walk = v.pose === 'walk' || v.pose === 'carry'
+    const resting = v.pose === 'rest' && !v.moving
+    if (resting && idle.current && Math.abs(lastWet.current - v.wet) < 0.02) return
     gait.current += dt * (swim ? 5.4 : walk && v.moving ? 5.8 : 0.7)
     const g = gait.current
     const sit = v.pose === 'rest' ? 0.28 : 0
     const chew = v.pose === 'chew' ? 1 : 0
     furMat.color.copy(dryFur).lerp(wetFur, v.wet)
+    bellyMat.color.copy(paleFur).lerp(wetFur, v.wet * 0.7)
     if (body.current) {
       body.current.rotation.x += ((sit * 0.32 + (swim ? 0.14 : 0)) - body.current.rotation.x) * (1 - Math.exp(-5 * dt))
       body.current.rotation.z = Math.sin(g) * (walk && v.moving ? 0.045 : 0)
@@ -141,15 +152,20 @@ function ProceduralBeaver({ visual }: { visual: MutableRefObject<BeaverVisual> }
     if (fr.current) fr.current.rotation.x = -stride
     if (hl.current) hl.current.rotation.x = stride * 0.55 + (swim ? 0.55 : 0)
     if (hr.current) hr.current.rotation.x = -stride * 0.55 + (swim ? 0.55 : 0)
+    lastWet.current = v.wet
+    idle.current = resting
   })
 
   return (
     <group ref={body}>
-      <mesh position={[0, 0.048, 0.008]} scale={[1.18, 0.82, 1.92]} castShadow material={furMat}>
-        <sphereGeometry args={[0.055, 22, 16]} />
+      <mesh position={[0, 0.048, 0.008]} scale={[1.18, 0.82, 1.92]} castShadow receiveShadow material={furMat}>
+        <sphereGeometry args={[0.055, 24, 18]} />
+      </mesh>
+      <mesh position={[0, 0.03, 0.01]} scale={[1.02, 0.55, 1.7]} material={bellyMat}>
+        <sphereGeometry args={[0.055, 16, 12]} />
       </mesh>
       <mesh position={[0, 0.042, 0.055]} scale={[1.05, 0.7, 0.85]} castShadow material={furMat}>
-        <sphereGeometry args={[0.04, 16, 12]} />
+        <sphereGeometry args={[0.04, 18, 14]} />
       </mesh>
       <group ref={head} position={[0, 0.058, 0.092]}>
         <mesh scale={[0.95, 0.82, 1.05]} castShadow material={furMat}>

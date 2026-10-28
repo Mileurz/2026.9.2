@@ -1,7 +1,9 @@
 import type { NoiseParams } from '../perlin'
+import { cellOf, emptyBuckets, queryCells } from '../spatial'
 import type { Uv } from './Beaver'
 import type { RiparianSpecies } from './RiparianBiome'
 import { riverCenter, riverDistance } from './Hydrology'
+import { YEAR_RATE } from './SimulationEngine'
 
 export type TreeState =
   | 'HEALTHY'
@@ -65,6 +67,56 @@ export type BranchResource = {
 export type ForestState = {
   trees: TreeResource[]
   branches: BranchResource[]
+}
+
+const treeIndex = new Map<string, TreeResource>()
+const branchIndex = new Map<string, BranchResource>()
+let treeBuckets: TreeResource[][] = emptyBuckets()
+let branchBuckets: BranchResource[][] = emptyBuckets()
+let indexedForest: ForestState | null = null
+let indexedTreeN = -1
+let indexedBranchN = -1
+
+export function indexForest(forest: ForestState, force = false) {
+  if (
+    !force &&
+    indexedForest === forest &&
+    indexedTreeN === forest.trees.length &&
+    indexedBranchN === forest.branches.length
+  ) {
+    return
+  }
+  indexedForest = forest
+  indexedTreeN = forest.trees.length
+  indexedBranchN = forest.branches.length
+  treeIndex.clear()
+  branchIndex.clear()
+  treeBuckets = emptyBuckets()
+  branchBuckets = emptyBuckets()
+  for (const tree of forest.trees) {
+    treeIndex.set(tree.id, tree)
+    treeBuckets[cellOf(tree.position.u, tree.position.v)].push(tree)
+  }
+  for (const branch of forest.branches) {
+    branchIndex.set(branch.id, branch)
+    branchBuckets[cellOf(branch.u, branch.v)].push(branch)
+  }
+}
+
+function nearbyTrees(u: number, v: number, radius: number, visit: (tree: TreeResource) => void) {
+  queryCells(u, v, radius, (cell) => {
+    for (const tree of treeBuckets[cell]) {
+      if (Math.hypot(tree.position.u - u, tree.position.v - v) <= radius) visit(tree)
+    }
+  })
+}
+
+function nearbyBranches(u: number, v: number, radius: number, visit: (branch: BranchResource) => void) {
+  queryCells(u, v, radius, (cell) => {
+    for (const branch of branchBuckets[cell]) {
+      if (Math.hypot(branch.u - u, branch.v - v) <= radius) visit(branch)
+    }
+  })
 }
 
 export type TreeSeed = {
@@ -169,18 +221,29 @@ export function treePreference(tree: TreeResource, from: Uv) {
   return species * 1.5 + water * 1.2 + medium * 0.95 - largePen - farPen - dist * 0.65 + invest
 }
 
-export function pickPreferredTree(forest: ForestState, from: Uv) {
+export function pickPreferredTree(
+  forest: ForestState,
+  from: Uv,
+  allow?: (tree: TreeResource) => boolean,
+) {
+  indexForest(forest)
   let best: TreeResource | null = null
   let score = -Infinity
-  for (const tree of forest.trees) {
-    if (!isTreeValidTarget(tree)) continue
-    if (tree.distanceToWater > 0.2) continue
+  const consider = (tree: TreeResource) => {
+    if (!isTreeValidTarget(tree)) return
+    if (tree.distanceToWater > 0.22) return
+    if (allow && !allow(tree)) return
     const s = treePreference(tree, from)
     if (s > score) {
       score = s
       best = tree
     }
   }
+  nearbyTrees(from.u, from.v, 0.2, consider)
+  if (best) return best
+  nearbyTrees(from.u, from.v, 0.38, consider)
+  if (best) return best
+  for (const tree of forest.trees) consider(tree)
   return best
 }
 
@@ -188,7 +251,7 @@ export function approachPoint(tree: TreeResource, from: Uv) {
   let du = from.u - tree.position.u
   let dv = from.v - tree.position.v
   const len = Math.hypot(du, dv) || 1
-  const stand = 0.013 + tree.trunkDiameter * 0.35
+  const stand = 0.01 + tree.trunkDiameter * 0.12
   return {
     u: clamp(tree.position.u + (du / len) * stand, 0.06, 0.94),
     v: clamp(tree.position.v + (dv / len) * stand, 0.06, 0.94),
@@ -256,38 +319,41 @@ export function isBranchBuildable(branch: BranchResource) {
 
 export function findBranch(forest: ForestState, id: string | null | undefined) {
   if (!id) return undefined
-  return forest.branches.find((b) => b.id === id)
+  indexForest(forest)
+  return branchIndex.get(id) ?? forest.branches.find((b) => b.id === id)
 }
 
 export function pickNearbyBranch(forest: ForestState, from: Uv, maxDist = 0.22) {
+  indexForest(forest)
   let best: BranchResource | null = null
   let score = -Infinity
-  for (const branch of forest.branches) {
-    if (!isBranchFree(branch)) continue
+  nearbyBranches(from.u, from.v, maxDist, (branch) => {
+    if (!isBranchFree(branch)) return
     const d = Math.hypot(from.u - branch.u, from.v - branch.v)
-    if (d > maxDist) continue
+    if (d > maxDist) return
     const s = 1.2 - d * 4 + branch.woodAmount * 0.15 - branch.length * 0.35
     if (s > score) {
       score = s
       best = branch
     }
-  }
+  })
   return best
 }
 
 export function pickBuildingBranch(forest: ForestState, from: Uv, maxDist = 0.28) {
+  indexForest(forest)
   let best: BranchResource | null = null
   let score = -Infinity
-  for (const branch of forest.branches) {
-    if (!isBranchBuildable(branch)) continue
+  nearbyBranches(from.u, from.v, maxDist, (branch) => {
+    if (!isBranchBuildable(branch)) return
     const d = Math.hypot(from.u - branch.u, from.v - branch.v)
-    if (d > maxDist) continue
+    if (d > maxDist) return
     const s = 1.15 - d * 3.6 + branch.woodAmount * 0.2 - branch.length * 0.22 + (branch.stored ? 0.12 : 0)
     if (s > score) {
       score = s
       best = branch
     }
-  }
+  })
   return best
 }
 
@@ -341,8 +407,8 @@ export function stepForest(
     if (tree.currentState === 'STUMP') {
       const growing = (season?.vegetation ?? 0) > 0.38 && (season?.green ?? 0) > 0.28
       if (growing && !isFloodKilled(tree)) {
-        tree.regenAge += eco
-        if (tree.regenAge > 18) {
+        tree.regenAge += eco * YEAR_RATE
+        if (tree.regenAge > 1.2) {
           tree.currentState = 'HEALTHY'
           tree.chewProgress = 0
           tree.availability = true
@@ -391,7 +457,7 @@ export function stepForest(
 export function syncForest(forest: ForestState, seeds: TreeSeed[], params: NoiseParams) {
   const have = new Set(forest.trees.map((t) => t.id))
   for (const seed of seeds) {
-    if (forest.trees.length >= 110) break
+    if (forest.trees.length >= 240) break
     if (have.has(seed.id)) continue
     const near = forest.trees.some(
       (t) => Math.hypot(t.position.u - seed.u, t.position.v - seed.v) < 0.016,
@@ -400,15 +466,16 @@ export function syncForest(forest: ForestState, seeds: TreeSeed[], params: Noise
     forest.trees.push(createTreeResource(seed, params))
     have.add(seed.id)
   }
-  if (forest.branches.length > 96) {
+  if (forest.branches.length > 160) {
     forest.branches = forest.branches.filter(
       (b) => b.carriedBy || b.inDam || b.inLodge || b.availability || !b.stored,
     )
-    if (forest.branches.length > 96) forest.branches = forest.branches.slice(-80)
+    if (forest.branches.length > 160) forest.branches = forest.branches.slice(-140)
   }
 }
 
 export function findTree(forest: ForestState, id: string | null | undefined) {
   if (!id) return undefined
-  return forest.trees.find((t) => t.id === id)
+  indexForest(forest)
+  return treeIndex.get(id) ?? forest.trees.find((t) => t.id === id)
 }

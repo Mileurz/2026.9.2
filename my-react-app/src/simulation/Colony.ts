@@ -2,7 +2,7 @@ import { sampleHeightField, type HeightField } from '../heightField'
 import type { NoiseParams } from '../perlin'
 import type { BeaverAgent } from './Beaver'
 import { emptyHydro, riverWayVersion, type HydroState, riverCenter, riverHalfWidth } from './Hydrology'
-import { emptyDam, ensureDamSite, habitatDamScore, type DamState } from './Dam'
+import { damSiteFits, emptyDam, ensureDamSite, type DamState } from './Dam'
 import { emptyLodge, ensureLodgeSite, lodgeHome, lodgeIsHome, type LodgeState } from './Lodge'
 import { emptyReproduction, type ReproductionState } from './Population'
 import { emptySeason, type SeasonState } from './Season'
@@ -11,6 +11,7 @@ import { emptyTerritory, type TerritoryState } from './Territory'
 import { emptyForest, type ForestState } from './TreeResource'
 import { emptyClock, type SimClock } from './SimulationEngine'
 import { emptyWildlife, type WildlifeState } from './Wildlife'
+import { seedTimeline, type ColonyHistory } from './Timeline'
 
 export type ColonyKnobs = {
   activity: number
@@ -71,6 +72,7 @@ export type ColonyState = {
   willDam: boolean
   willDamDecided: boolean
   landFitAt: number
+  history?: ColonyHistory
 }
 
 export function colonyStorage(home: { u: number; v: number }) {
@@ -128,15 +130,20 @@ export function fitColonyToLand(
   if (colony.willDamDecided === undefined) colony.willDamDecided = false
   if (colony.landFitAt === undefined) colony.landFitAt = -1
   if (!force && colony.landFitAt === way && colony.willDamDecided) {
+    if (colony.dam.pieces.length >= 1 && !colony.lodge.locked) {
+      ensureLodgeSite(colony.lodge, colony.dam, colony.hydro, params, colony.home, field)
+    }
     const home = lodgeIsHome(colony.lodge) ? lodgeHome(colony.lodge) : colony.home
     return { home, bank: colony.home, jump: 0 }
   }
   const bank = colonyHome(params.seaLevel, field)
   if (!colony.willDamDecided) {
-    colony.willDam = habitatDamScore(field, params, bank) > 0.34
+    ensureDamSite(colony.dam, field, params, bank)
+    colony.willDam = damSiteFits(colony.dam, field, params, bank)
     colony.willDamDecided = true
+  } else if (colony.willDam) {
+    ensureDamSite(colony.dam, field, params, bank)
   }
-  if (colony.willDam) ensureDamSite(colony.dam, field, params, bank)
   ensureLodgeSite(colony.lodge, colony.dam, colony.hydro, params, bank, field)
   const home = lodgeIsHome(colony.lodge) ? lodgeHome(colony.lodge) : bank
   const prev = colony.home
@@ -231,7 +238,7 @@ export function createFoundingColony(): ColonyState {
     dispersalSign: 1,
     wet: 0.1,
   }
-  return {
+  const colony: ColonyState = {
     home,
     storage: colonyStorage(home),
     woodCollected: 0,
@@ -251,4 +258,6 @@ export function createFoundingColony(): ColonyState {
     willDamDecided: false,
     landFitAt: -1,
   }
+  seedTimeline(colony)
+  return colony
 }

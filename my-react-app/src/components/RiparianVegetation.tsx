@@ -14,7 +14,7 @@ import {
 } from '../simulation/Hydrology'
 
 const dummy = new Object3D()
-const wood = new Color('#c4a06a')
+const wood = new Color('#5a402c')
 
 const WOOD = 26
 
@@ -102,7 +102,7 @@ export function RiparianVegetation({
   return (
     <instancedMesh ref={woodRef} args={[undefined, undefined, WOOD]} frustumCulled={false} raycast={() => {}}>
       <cylinderGeometry args={[0.045, 0.05, 0.22, 10]} />
-      <meshStandardMaterial color={wood} roughness={0.78} metalness={0.03} />
+      <meshStandardMaterial color={wood} roughness={0.94} metalness={0} />
     </instancedMesh>
   )
 }

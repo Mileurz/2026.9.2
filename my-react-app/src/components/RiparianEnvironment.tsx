@@ -1,6 +1,7 @@
 import { useFrame } from '@react-three/fiber'
 import { useLayoutEffect, useRef, type MutableRefObject } from 'react'
 import { Color, InstancedMesh, Object3D } from 'three'
+import { bindWorldCull } from '../visual'
 import { getHeightField, sampleHeightField, type HeightField } from '../heightField'
 import type { NoiseParams } from '../perlin'
 import type { ColonyState } from '../simulation/Colony'
@@ -15,11 +16,11 @@ import {
 import { buildRiparianLayout, type GroundSpot } from '../simulation/RiparianBiome'
 
 const dummy = new Object3D()
-const grassColor = new Color('#66764a')
-const shrubColor = new Color('#556844')
-const reedColor = new Color('#6a7246')
-const rockColor = new Color('#7c7872')
-const woodColor = new Color('#c4a06a')
+const grassColor = new Color('#5a6844')
+const shrubColor = new Color('#4a5a3c')
+const reedColor = new Color('#5c6440')
+const rockColor = new Color('#6a6660')
+const woodColor = new Color('#5a402c')
 
 function surfaceY(field: HeightField, params: NoiseParams, u: number, v: number) {
   return carveRiver(sampleHeightField(field, u, v), u, v, params.seaLevel) * params.height
@@ -61,6 +62,7 @@ function writeGround(
   })
   mesh.count = spots.length
   mesh.instanceMatrix.needsUpdate = true
+  bindWorldCull(mesh, params.worldSize)
 }
 
 export function RiparianEnvironment({
@@ -78,7 +80,7 @@ export function RiparianEnvironment({
   const rockRef = useRef<InstancedMesh>(null)
   const woodRef = useRef<InstancedMesh>(null)
   const wayVer = useRef(-1)
-  const skip = useRef(0)
+  const lastPaint = useRef('')
   const layout = useRef(buildRiparianLayout(getHeightField(params, 0, 0), params))
 
   const paint = (field: HeightField) => {
@@ -109,60 +111,56 @@ export function RiparianEnvironment({
 
   useFrame(() => {
     const field = getHeightField(params, offsetRef.current.x, offsetRef.current.y)
-    updateRiverFromLand(field, params)
     if (wayVer.current !== riverWayVersion()) {
       wayVer.current = riverWayVersion()
       layout.current = buildRiparianLayout(field, params)
-      paint(field)
-      return
+      lastPaint.current = ''
     }
-    skip.current += 1
-    if (skip.current % 5 !== 0) return
+    const hydro = colonyRef?.current.hydro ?? defaultHydro
+    const drown = Math.min(0.72, (colonyRef?.current.succession?.marshAge ?? 0) * 0.08)
+    const veg = 0.35 + 0.65 * (colonyRef?.current.season?.vegetation ?? 1)
+    const key = `${wayVer.current}|${hydro.pondArea.toFixed(2)}|${drown.toFixed(2)}|${veg.toFixed(2)}`
+    if (key === lastPaint.current) return
+    lastPaint.current = key
     paint(field)
   })
 
   return (
     <group>
-      <instancedMesh ref={grassRef} args={[undefined, undefined, 340]} frustumCulled={false} raycast={() => {}}>
-        <coneGeometry args={[0.06, 0.14, 5]} />
-        <meshStandardMaterial color={grassColor} roughness={0.96} metalness={0} />
+      <instancedMesh ref={grassRef} args={[undefined, undefined, 520]} raycast={() => {}}>
+        <coneGeometry args={[0.055, 0.16, 5]} />
+        <meshStandardMaterial color={grassColor} roughness={0.97} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={shrubRef}
-        args={[undefined, undefined, 70]}
-        frustumCulled={false}
+        args={[undefined, undefined, 110]}
         raycast={() => {}}
         castShadow
-        receiveShadow
       >
-        <icosahedronGeometry args={[0.08, 0]} />
-        <meshStandardMaterial color={shrubColor} roughness={0.93} metalness={0} />
+        <icosahedronGeometry args={[0.08, 1]} />
+        <meshStandardMaterial color={shrubColor} roughness={0.92} metalness={0} envMapIntensity={0.14} />
       </instancedMesh>
-      <instancedMesh ref={reedRef} args={[undefined, undefined, 160]} frustumCulled={false} raycast={() => {}}>
-        <cylinderGeometry args={[0.01, 0.014, 0.38, 4]} />
-        <meshStandardMaterial color={reedColor} roughness={0.94} metalness={0} />
+      <instancedMesh ref={reedRef} args={[undefined, undefined, 240]} raycast={() => {}}>
+        <cylinderGeometry args={[0.008, 0.012, 0.42, 5]} />
+        <meshStandardMaterial color={reedColor} roughness={0.96} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={rockRef}
         args={[undefined, undefined, 42]}
-        frustumCulled={false}
         raycast={() => {}}
         castShadow
-        receiveShadow
       >
         <dodecahedronGeometry args={[0.07, 0]} />
-        <meshStandardMaterial color={rockColor} roughness={0.97} metalness={0.02} flatShading />
+        <meshStandardMaterial color={rockColor} roughness={0.94} metalness={0.03} envMapIntensity={0.18} />
       </instancedMesh>
       <instancedMesh
         ref={woodRef}
         args={[undefined, undefined, 22]}
-        frustumCulled={false}
         raycast={() => {}}
         castShadow
-        receiveShadow
       >
-        <cylinderGeometry args={[0.045, 0.05, 0.22, 10]} />
-        <meshStandardMaterial color={woodColor} roughness={0.8} metalness={0.03} />
+        <cylinderGeometry args={[0.038, 0.048, 0.28, 8]} />
+        <meshStandardMaterial color={woodColor} roughness={0.94} metalness={0} />
       </instancedMesh>
     </group>
   )

@@ -49,7 +49,7 @@ export function buildRiparianLayout(field: HeightField, params: NoiseParams) {
   const wood: GroundSpot[] = []
   const trees: TreeSpot[] = []
 
-  for (let i = 0; i < 720 && grass.length < 340; i += 1) {
+  for (let i = 0; i < 1100 && grass.length < 520; i += 1) {
     const u = hash(i * 3 + 1)
     const v = hash(i * 5 + 2)
     const n = heightAt(field, params, u, v)
@@ -62,7 +62,7 @@ export function buildRiparianLayout(field: HeightField, params: NoiseParams) {
     grass.push({ u, v, yaw: hash(i + 4) * Math.PI * 2, scale: 0.55 + hash(i + 6) * 0.5 })
   }
 
-  for (let i = 0; i < 400 && shrubs.length < 70; i += 1) {
+  for (let i = 0; i < 520 && shrubs.length < 110; i += 1) {
     const u = hash(i * 7 + 3)
     const v = hash(i * 11 + 8)
     const n = heightAt(field, params, u, v)
@@ -73,7 +73,7 @@ export function buildRiparianLayout(field: HeightField, params: NoiseParams) {
     shrubs.push({ u, v, yaw: hash(i) * Math.PI * 2, scale: 0.7 + hash(i + 2) * 0.45 })
   }
 
-  for (let i = 0; i < 280 && reeds.length < 160; i += 1) {
+  for (let i = 0; i < 420 && reeds.length < 240; i += 1) {
     const u = 0.08 + hash(i * 13) * 0.84
     const side = i % 2 === 0 ? 1 : -1
     const v = riverCenter(u) + side * (w * 0.92 + hash(i) * 0.02)
@@ -100,13 +100,14 @@ export function buildRiparianLayout(field: HeightField, params: NoiseParams) {
   }
 
   const speciesCycle: RiparianSpecies[] = ['willow', 'aspen', 'poplar', 'alder', 'birch', 'maple']
-  for (let i = 0; i < 500 && trees.length < 96; i += 1) {
+  for (let i = 0; i < 900 && trees.length < 168; i += 1) {
     const u = hash(i * 23 + 6)
     const v = hash(i * 29 + 1)
     const n = heightAt(field, params, u, v)
     const d = Math.abs(v - riverCenter(u))
     if (n < 0.05 || n > 0.24) continue
-    if (corridorMask(u, v, sea) > 0.18) continue
+    if (riverMask(u, v, sea) > 0.38) continue
+    if (d < w + 0.028) continue
     if (slope(field, params, u, v) > 6.2) continue
     if (hash(i + 21) > 0.62) continue
     let species: RiparianSpecies = 'maple'

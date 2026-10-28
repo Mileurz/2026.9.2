@@ -417,9 +417,14 @@ function measureAreas(
   space.wetlandArea = wet
   let forest = 0
   const treeCell = (params.worldSize * 0.048) ** 2
+  const spread = riverHalfWidth(sea) + (colony.hydro.pondSpread ?? 0.02)
   for (const tree of colony.forest.trees) {
-    const h = carveRiver(sampleHeightField(field, tree.position.u, tree.position.v), tree.position.u, tree.position.v, sea)
-    if (!isInundated(h, tree.position.u, tree.position.v, colony.hydro, sea)) continue
+    const u = tree.position.u
+    const v = tree.position.v
+    const h = carveRiver(sampleHeightField(field, u, v), u, v, sea)
+    const along = streamAlong(u, colony.hydro)
+    const inPond = along <= 0.012 && riverDistance(u, v) < spread
+    if (!isInundated(h, u, v, colony.hydro, sea) && !inPond) continue
     forest += treeCell
   }
   space.floodedForestArea = forest
@@ -456,15 +461,26 @@ export function stepSuccession(
 ) {
   const space = ensureSuccession(colony.succession)
   colony.succession = space
-  const dtc = Math.min(2, Math.max(0, dt))
+  const dtc = Math.min(0.08, Math.max(0, dt))
   const sea = params.seaLevel
   const hydro = colony.hydro
   const bank = riverHalfWidth(sea)
   space.tick += 1
   const effect = hydro.effectiveness ?? 0
-  if (effect > 0.05) space.marshAge += dtc * (0.05 + effect * 0.14)
+  if (effect > 0.04 || colony.dam.pieces.length >= 2) {
+    space.marshAge += dtc * (0.06 + Math.max(effect, 0.08) * 0.14)
+  }
 
-  for (const tree of colony.forest.trees) {
+  for (let i = 0; i < colony.forest.trees.length; i += 1) {
+    const tree = colony.forest.trees[i]
+    if (
+      (space.tick + i) % 3 !== 0 &&
+      (tree.ecoState === 'living' || !tree.ecoState) &&
+      tree.floodStress < 0.12 &&
+      tree.floodAge < 1
+    ) {
+      continue
+    }
     const u = tree.position.u
     const v = tree.position.v
     const n = carveRiver(sampleHeightField(field, u, v), u, v, sea)
@@ -472,10 +488,19 @@ export function stepSuccession(
     const wet = isInundated(n, u, v, hydro, sea)
     const spread = bank + (hydro.pondSpread ?? 0.02) * 0.85
     const nearWet = !wet && riverDistance(u, v) < spread + 0.03 && streamAlong(u, hydro) < 0.04
-    stepTreeFlood(tree, colony.forest, wet, nearWet, water - n, dtc * (colony.knobs?.flood ?? 1))
+    const cadence =
+      (tree.ecoState === 'living' || !tree.ecoState) && tree.floodStress < 0.12 && tree.floodAge < 1 ? 3 : 1
+    stepTreeFlood(tree, colony.forest, wet, nearWet, water - n, dtc * (colony.knobs?.flood ?? 1) * cadence)
   }
 
-  for (const plant of space.plants) {
+  const veg = colony.season?.vegetation ?? 1
+  for (let i = 0; i < space.plants.length; i += 1) {
+    const plant = space.plants[i]
+    const coarse = plant.kind === 'grass' || plant.kind === 'sedge'
+    if (coarse && (space.tick + i) % 2 !== 0) {
+      plant.age = clamp(plant.age + dtc * 0.022 * plant.vigor * (0.35 + veg * 0.75) - dtc * 0.008, 0, 1)
+      continue
+    }
     const n = carveRiver(sampleHeightField(field, plant.u, plant.v), plant.u, plant.v, sea)
     const water = localWaterN(plant.u, plant.v, hydro, sea)
     const wet = isInundated(n, plant.u, plant.v, hydro, sea)
@@ -486,15 +511,16 @@ export function stepSuccession(
     else if (plant.kind === 'reed') fit = depth < 0.026 ? 1 : 0.45
     else if (plant.kind === 'sedge') fit = depth < 0.014 ? 1 : 0.3
     else fit = wet && depth > 0.012 ? 0.25 : 1
-    const veg = colony.season?.vegetation ?? 1
     const grow = dtc * 0.032 * plant.vigor * fit * (0.55 + clamp(space.marshAge / 10, 0, 0.7)) * (0.35 + veg * 0.75)
     plant.age = clamp(plant.age + grow - dtc * 0.018 * (1.05 - veg) - dtc * 0.01 * (1 - fit), 0, 1)
   }
   space.plants = space.plants.filter((p) => p.age > 0.02)
 
   const attempts =
-    space.marshAge < 0.35 ? 0 : 1 + Math.min(7, Math.floor(space.marshAge * 0.55 + effect * 3.2))
-  if (space.tick % 6 === 0) {
+    space.marshAge < 0.15
+      ? 0
+      : 1 + Math.min(10, Math.floor(space.marshAge * 0.55 + effect * 3.2 + (dtc > 0.04 ? 6 : 0)))
+  if (attempts > 0 && (space.tick % 6 === 0 || dtc >= 0.05)) {
     for (let i = 0; i < attempts; i += 1) trySpawnPlant(colony, field, params, space.tick * 13 + i * 17)
   }
   if (space.tick % 8 === 0) rememberShore(space, field, params, hydro)

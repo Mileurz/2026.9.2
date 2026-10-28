@@ -257,7 +257,16 @@ export function stepWildlife(
   space.richness += (clamp(score, 0, 1) - space.richness) * (1 - Math.exp(-0.12 * eco))
   const want = targets(space.richness)
 
-  for (const a of space.agents) stepAgent(a, field, params, colony, vis)
+  const homeU = colony.lodge.siteU
+  const homeV = colony.lodge.siteV
+  for (const a of space.agents) {
+    const far = Math.hypot(a.u - homeU, a.v - homeV) > 0.4
+    if (far && space.tick % 3 !== 0) {
+      a.phase += vis * 0.5
+      continue
+    }
+    stepAgent(a, field, params, colony, vis * (far ? 3 : 1))
+  }
 
   if (space.tick % 18 === 0) {
     for (const kind of Object.keys(want) as WildlifeKind[]) {

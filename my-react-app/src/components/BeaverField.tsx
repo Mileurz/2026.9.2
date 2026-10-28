@@ -1,4 +1,4 @@
-import { useFrame, useThree } from '@react-three/fiber'
+import { useFrame } from '@react-three/fiber'
 import { useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { Group, Vector3 } from 'three'
 import { getHeightField } from '../heightField'
@@ -8,15 +8,14 @@ import { poseForTask } from '../simulation/Beaver'
 import { stageScale } from '../simulation/Population'
 import type { ColonyState } from '../simulation/Colony'
 import { sampleBeaverGround, stepColony } from '../simulation/BeaverMovement'
-import { consumeSimTime, ensureClock } from '../simulation/SimulationEngine'
+import { consumeSimTime, ensureClock, pauseSim } from '../simulation/SimulationEngine'
 import { riverWayVersion, updateRiverFromLand } from '../simulation/Hydrology'
 import { buildRiparianLayout } from '../simulation/RiparianBiome'
 import { plantedKindToSpecies, type TreeSeed } from '../simulation/TreeResource'
 import { BeaverModel, type BeaverVisual } from './BeaverModel'
+import { BEAVER_DRAW } from '../visual'
 
 const scratch = new Vector3()
-const camOffset = new Vector3()
-const camTarget = new Vector3()
 
 function LiveBeaver({
   id,
@@ -56,7 +55,7 @@ function LiveBeaver({
     const g = sampleBeaverGround(world, agent.u, agent.v)
     const x = (agent.u - 0.5) * params.worldSize
     const z = (agent.v - 0.5) * params.worldSize
-    const y = (g.inRiver ? g.water : g.n) * params.height + (g.inRiver ? 0.016 : 0.006)
+    const y = (g.inRiver ? g.water : g.n) * params.height + (g.inRiver ? 0.014 : 0.008)
     const moving = agent.speed > 0.004
     const e = 0.014
     const nL = moving ? sampleBeaverGround(world, agent.u - e, agent.v).n : g.n
@@ -76,7 +75,7 @@ function LiveBeaver({
     group.rotation.y += dyaw * (1 - Math.exp(-5.2 * dt))
     group.rotation.x += (pitch - group.rotation.x) * (1 - Math.exp(-3.2 * dt))
     const sexScale = agent.sex === 'male' ? 1.04 : 0.98
-    group.scale.setScalar(sexScale * stageScale(agent.lifeStage ?? 'adult'))
+    group.scale.setScalar(sexScale * stageScale(agent.lifeStage ?? 'adult') * BEAVER_DRAW)
     const held = colonyRef.current.forest?.branches.find((br) => br.id === agent.targetBranchId)
     visual.current.pose = poseForTask(agent.currentTask, g.inRiver, agent.carrying)
     visual.current.wet = agent.wet
@@ -105,30 +104,6 @@ function LiveBeaver({
       <BeaverModel visual={visual} />
     </group>
   )
-}
-
-export function FollowBeaver({
-  enabled,
-  followPos,
-}: {
-  enabled: boolean
-  followPos: MutableRefObject<Vector3>
-}) {
-  const { camera, controls } = useThree()
-  useFrame((_, dt) => {
-    if (!enabled || !controls) return
-    const c = controls as unknown as { target: Vector3; update: () => void }
-    const k = 1 - Math.exp(-2.1 * dt)
-    c.target.lerp(followPos.current, k)
-    camOffset.copy(camera.position).sub(c.target)
-    const span = camOffset.length()
-    const want = span < 1.5 ? 2.1 : span > 3.4 ? 2.8 : span
-    camOffset.multiplyScalar(span > 0.001 ? want / span : 1)
-    camTarget.copy(c.target).add(camOffset)
-    camera.position.lerp(camTarget, k * 0.35)
-    c.update()
-  })
-  return null
 }
 
 export function BeaverField({
@@ -199,6 +174,7 @@ export function BeaverField({
     const seedTrees = seedTreesRef.current
     const clock = ensureClock(colonyRef.current.clock)
     colonyRef.current.clock = clock
+    if (colonyRef.current.history?.viewingId) pauseSim(clock)
     const { simDt, motionDt } = consumeSimTime(clock, dt)
     stepColony(colonyRef.current, { params, field, seedTrees, hydro: colonyRef.current.hydro }, simDt, motionDt)
     const ids = colonyRef.current.beavers.map((b) => b.id)

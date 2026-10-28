@@ -6,6 +6,9 @@ import type { NoiseParams } from '../perlin'
 import type { ColonyState } from '../simulation/Colony'
 import { carveRiver, cappedWaterN, defaultHydro } from '../simulation/Hydrology'
 import { emptyWildlife, type WildlifeAgent, type WildlifeKind } from '../simulation/Wildlife'
+import { bindWorldCull } from '../visual'
+
+/** Temporary marker shapes. Replace later with duck/bird/frog/fish GLB silhouettes. */
 
 const dummy = new Object3D()
 const COLORS: Record<WildlifeKind, Color> = {
@@ -64,6 +67,8 @@ export function WildlifeField({
     insect: null,
   })
 
+  const tick = useRef(0)
+
   useLayoutEffect(() => {
     for (const kind of KINDS) {
       const mesh = refs.current[kind]
@@ -72,6 +77,8 @@ export function WildlifeField({
   }, [])
 
   useFrame(() => {
+    tick.current += 1
+    if (tick.current % 2 !== 0) return
     const colony = colonyRef.current
     if (!colony.wildlife) colony.wildlife = emptyWildlife()
     const field = getHeightField(params, offsetRef.current.x, offsetRef.current.y)
@@ -86,6 +93,7 @@ export function WildlifeField({
       if (mesh) {
         mesh.count = list.length
         mesh.instanceMatrix.needsUpdate = true
+        bindWorldCull(mesh, params.worldSize)
       }
     }
   })
@@ -99,7 +107,6 @@ export function WildlifeField({
             refs.current[kind] = node
           }}
           args={[undefined, undefined, MAX[kind]]}
-          frustumCulled={false}
           raycast={() => {}}
         >
           {kind === 'insect' ? (

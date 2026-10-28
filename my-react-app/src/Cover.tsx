@@ -21,7 +21,7 @@ export function Cover({ folding, onStart, onFoldEnd }: CoverProps) {
       </div>
 
       <div className="cover-content">
-        <p className="site-mark">Studio</p>
+        <p className="site-mark">Riparian wetland study</p>
         <h1 className="cover-title">BEAVER NOISE</h1>
         <button type="button" className="cover-start" onClick={onStart} disabled={folding}>
           Start

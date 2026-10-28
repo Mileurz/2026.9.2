@@ -22,8 +22,9 @@ const FRAG = /* glsl */ `
 varying float vIce;
 void main() {
   if (vIce < 0.12) discard;
-  float a = smoothstep(0.12, 0.7, vIce) * 0.42;
-  gl_FragColor = vec4(0.86, 0.91, 0.94, a);
+  float a = smoothstep(0.12, 0.72, vIce) * 0.52;
+  vec3 ice = mix(vec3(0.72, 0.8, 0.84), vec3(0.9, 0.93, 0.95), smoothstep(0.2, 0.85, vIce));
+  gl_FragColor = vec4(ice, a);
 }
 `
 

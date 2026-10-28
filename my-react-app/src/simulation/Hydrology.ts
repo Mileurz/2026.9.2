@@ -161,10 +161,10 @@ export function localWaterN(u: number, v: number, hydro: HydroState = defaultHyd
   const reach = Math.max(0.04, hydro.pondReach ?? 0.05)
   const up = hydro.upstreamLevel ?? BASE_WATER
   const down = hydro.downstreamLevel ?? BASE_WATER
-  const tDown = smoothstep(-0.01, 0.022, along)
+  const tDown = smoothstep(-0.002, 0.005, along)
   const tFar = smoothstep(reach * 0.12, reach, -along)
   const upstream = up + (BASE_WATER - up) * tFar
-  return upstream + (down - upstream) * tDown
+  return Math.max(0, upstream + (down - upstream) * tDown)
 }
 
 /** Lowest uncarved bank beside the channel — pond water must stay below this. */
@@ -172,12 +172,10 @@ export function bankCrestN(u: number, field: HeightField, seaLevel = 0.1) {
   const c = riverCenter(u)
   const hw = riverHalfWidth(seaLevel)
   let crest = 1
-  for (const s of [hw * 1.08, hw * 1.28, hw * 1.55]) {
-    crest = Math.min(
-      crest,
-      sampleHeightField(field, u, clamp(c - s, 0, 1)),
-      sampleHeightField(field, u, clamp(c + s, 0, 1)),
-    )
+  for (const s of [hw * 1.65, hw * 2.15, hw * 2.7]) {
+    const left = sampleHeightField(field, u, clamp(c - s, 0, 1))
+    const right = sampleHeightField(field, u, clamp(c + s, 0, 1))
+    crest = Math.min(crest, Math.max(left, right))
   }
   return crest
 }
@@ -275,15 +273,13 @@ export function stepHydrology(
   hydro.effectiveness = damEffectiveness(dam)
   const e = hydro.effectiveness
   const crest = bankCrestN(dam.siteU, field, params.seaLevel)
-  const targetUp = Math.min(
-    BASE_WATER + e * 0.07 + clamp(waterBias, 0, 0.1),
-    crest - BANK_FREEBOARD,
-  )
-  const targetDown = BASE_WATER - e * 0.012
+  const bankCap = Math.max(BASE_WATER, crest - BANK_FREEBOARD)
+  const targetUp = Math.min(BASE_WATER + e * 0.07 + clamp(waterBias, 0, 0.1), bankCap)
+  const targetDown = Math.max(0.006, BASE_WATER - e * 0.012)
   const targetReach = 0.05 + e * 0.22
-  const targetSpread = 0.026 + e * 0.13
+  const targetSpread = 0.03 + e * 0.16
   const targetFlow = (1 - e * 0.52) * Math.max(0.22, seasonFlow)
-  const k = 1 - Math.exp(-0.04 * Math.max(0, dt))
+  const k = 1 - Math.exp(-0.12 * Math.max(0, dt))
   hydro.upstreamLevel += (targetUp - hydro.upstreamLevel) * k
   hydro.downstreamLevel += (targetDown - hydro.downstreamLevel) * k
   hydro.pondReach += (targetReach - hydro.pondReach) * k
@@ -384,17 +380,20 @@ export function riparianColor(
   const oldShore = tint?.shore ?? 0
   let rgb: [number, number, number]
   if (isInundated(n, u, v, hydro, seaLevel) || riverMask(u, v, seaLevel) > 0.5) {
-    rgb = mix([34, 52, 50], [46, 62, 56], g)
-    if (marsh > 0.08) rgb = mix(rgb, [42, 68, 52], clamp(marsh * 0.55, 0, 0.55))
-  } else if (d < w * 1.4) {
-    rgb = mix([94, 76, 54], [72, 64, 46], wet * 0.55 + g * 0.45)
-    if (marsh > 0.1) rgb = mix(rgb, [70, 92, 54], clamp(marsh, 0, 0.7))
+    rgb = mix([28, 40, 38], [40, 52, 46], g)
+    if (marsh > 0.08) rgb = mix(rgb, [36, 54, 42], clamp(marsh * 0.55, 0, 0.55))
+  } else if (d < w * 1.15) {
+    rgb = mix([62, 52, 40], [48, 44, 34], wet * 0.7 + g * 0.4)
+    if (marsh > 0.1) rgb = mix(rgb, [58, 72, 44], clamp(marsh, 0, 0.62))
+  } else if (d < w * 1.55) {
+    rgb = mix([86, 70, 50], [64, 58, 42], wet * 0.5 + g * 0.45)
+    if (marsh > 0.1) rgb = mix(rgb, [66, 84, 50], clamp(marsh, 0, 0.7))
   } else if (corridor > 0.32) {
-    rgb = mix([118, 100, 72], [84, 92, 56], 0.32 + g * 0.4)
-    if (marsh > 0.12) rgb = mix(rgb, [78, 98, 58], clamp(marsh * 0.85, 0, 0.75))
-  } else if (n < 0.11) rgb = mix([88, 100, 56], [60, 84, 50], n / 0.11)
-  else if (n < 0.26) rgb = mix([60, 84, 50], [90, 86, 66], (n - 0.11) / 0.15)
-  else rgb = mix([112, 108, 98], [156, 154, 148], Math.min(1, (n - 0.26) / 0.38))
+    rgb = mix([108, 96, 70], [76, 86, 54], 0.28 + g * 0.42)
+    if (marsh > 0.12) rgb = mix(rgb, [70, 90, 52], clamp(marsh * 0.85, 0, 0.75))
+  } else if (n < 0.11) rgb = mix([78, 90, 52], [54, 74, 46], n / 0.11)
+  else if (n < 0.26) rgb = mix([54, 74, 46], [86, 82, 62], (n - 0.11) / 0.15)
+  else rgb = mix([104, 100, 90], [142, 140, 134], Math.min(1, (n - 0.26) / 0.38))
   if (oldShore > 0.18) rgb = mix(rgb, [166, 150, 118], clamp(oldShore * 0.72, 0, 0.62))
   const wetWater = isInundated(n, u, v, hydro, seaLevel) || riverMask(u, v, seaLevel) > 0.5
   if (!wetWater) {

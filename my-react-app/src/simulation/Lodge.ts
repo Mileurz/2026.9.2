@@ -312,7 +312,7 @@ export function placeBranchOnLodge(
     sy: kind === 'log' ? 0.042 + branch.length * 0.12 : 0.028 + branch.length * 0.16,
     sz: kind === 'log' ? 0.009 : kind === 'stick' ? 0.004 : 0.0055,
   })
-  lodge.materialAmount += branch.woodAmount
+  lodge.materialAmount += Math.max(0.14, branch.woodAmount * 3)
   branch.inLodge = true
   branch.inDam = false
   branch.carriedBy = null

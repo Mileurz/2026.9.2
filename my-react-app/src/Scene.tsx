@@ -1,7 +1,8 @@
-import { Environment, Grid, OrbitControls } from '@react-three/drei'
+import { Environment, Grid } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { memo, useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import {
+  ACESFilmicToneMapping,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -9,6 +10,7 @@ import {
   DoubleSide,
   LinearFilter,
   Mesh,
+  MeshPhysicalMaterial,
   MeshStandardMaterial,
   PCFShadowMap,
   PlaneGeometry,
@@ -19,9 +21,11 @@ import {
 } from 'three'
 import { getHeightField, sampleHeightField, type HeightField } from './heightField'
 import { type NoiseParams, noiseToColor } from './perlin'
-import { BeaverField, FollowBeaver } from './components/BeaverField'
+import { BeaverField } from './components/BeaverField'
+import { CameraRig, type CameraMode } from './components/CameraRig'
 import { DamField } from './components/DamField'
 import { LodgeField } from './components/LodgeField'
+import { OverlayField } from './components/OverlayField'
 import { TerritoryField } from './components/TerritoryField'
 import { ForestField } from './components/ForestField'
 import { RiparianEnvironment } from './components/RiparianEnvironment'
@@ -59,6 +63,8 @@ import {
   type WeatherKind,
 } from './weather'
 
+const idleFollow: MutableRefObject<Vector3> = { current: new Vector3() }
+
 type Offset = { x: number; y: number }
 
 type SceneProps = {
@@ -84,7 +90,12 @@ type SceneProps = {
   onSelectBeaver?: (id: string) => void
   followPos?: MutableRefObject<Vector3>
   followCamera?: boolean
+  cameraMode?: CameraMode
   showTerritory?: boolean
+  showTreeTargets?: boolean
+  showResourceNodes?: boolean
+  showWaterChange?: boolean
+  showEcologicalZones?: boolean
 }
 
 function applyHeightField(
@@ -191,17 +202,6 @@ function applyHeightField(
   geo.computeVertexNormals()
 }
 
-function clipDryWater(shader: { vertexShader: string; fragmentShader: string }) {
-  shader.vertexShader = `attribute float wet;\nvarying float vWet;\n${shader.vertexShader}`.replace(
-    '#include <begin_vertex>',
-    '#include <begin_vertex>\nvWet = wet;',
-  )
-  shader.fragmentShader = `varying float vWet;\n${shader.fragmentShader}`.replace(
-    '#include <clipping_planes_fragment>',
-    '#include <clipping_planes_fragment>\nif (vWet < 0.42) discard;',
-  )
-}
-
 function applyWaterSurface(
   geo: PlaneGeometry,
   field: HeightField | null,
@@ -260,9 +260,11 @@ float foamLive(vec2 uv, float t) {
 }
 `
 
-function bindWaveShader(material: MeshStandardMaterial) {
+function bindLandShader(material: MeshStandardMaterial, shoreTex: DataTexture, riparian = false) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = { value: 0 }
+    shader.uniforms.uShore = { value: shoreTex }
+    shader.uniforms.uRiparian = { value: riparian ? 1 : 0 }
     material.userData.uTime = shader.uniforms.uTime
     shader.vertexShader = shader.vertexShader.replace(
       '#include <common>',
@@ -281,21 +283,35 @@ vFoamUv = uv;`,
       '#include <common>',
       `#include <common>
 uniform float uTime;
+uniform float uRiparian;
+uniform sampler2D uShore;
 varying float vFoam;
 varying vec2 vFoamUv;
 ${FOAM_NOISE}`,
     )
     shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+vec4 landShore = texture2D(uShore, vFoamUv);
+float landWet = max(landShore.g, landShore.b * 0.65) * uRiparian;
+roughnessFactor = mix(roughnessFactor, 0.34, clamp(landWet * 0.82, 0.0, 0.78));`,
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       `#include <opaque_fragment>
+vec4 wetShore = texture2D(uShore, vFoamUv);
+float wet = max(wetShore.g, wetShore.b * 0.55) * uRiparian;
+float grain = foamValue(vFoamUv * 86.0);
+gl_FragColor.rgb *= mix(vec3(1.0), vec3(0.46, 0.5, 0.48), clamp(wet * 0.72, 0.0, 0.7));
+gl_FragColor.rgb *= 0.94 + grain * 0.08;
 float live = foamLive(vFoamUv, uTime);
-gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.94, 0.97, 1.0), clamp(vFoam * live * 0.55, 0.0, 1.0));`,
+gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.86, 0.88, 0.86), clamp(vFoam * live * 0.28, 0.0, 0.35));`,
     )
   }
-  material.customProgramCacheKey = () => 'noise-foam-wave-dots'
+  material.customProgramCacheKey = () => `land-wet-shore-${riparian ? 1 : 0}`
 }
 
-function bindWaterFoamShader(material: MeshStandardMaterial, shoreTex: DataTexture, riparian = false) {
+function bindWaterShader(material: MeshPhysicalMaterial, shoreTex: DataTexture, riparian = false) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = { value: 0 }
     shader.uniforms.uShore = { value: shoreTex }
@@ -307,12 +323,18 @@ function bindWaterFoamShader(material: MeshStandardMaterial, shoreTex: DataTextu
     shader.vertexShader = shader.vertexShader.replace(
       '#include <common>',
       `#include <common>
-varying vec2 vShoreUv;`,
+attribute float wet;
+varying float vWet;
+varying vec2 vShoreUv;
+uniform float uTime;`,
     )
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
-vShoreUv = uv;`,
+vWet = wet;
+vShoreUv = uv;
+float chop = sin(uv.x * 52.0 + uTime * 1.55) * 0.0032 + sin(uv.y * 38.0 - uTime * 1.12) * 0.0024;
+transformed.y += chop * wet;`,
     )
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <common>',
@@ -321,28 +343,34 @@ uniform float uTime;
 uniform float uFlow;
 uniform float uRiparian;
 uniform sampler2D uShore;
+varying float vWet;
 varying vec2 vShoreUv;
 ${FOAM_NOISE}`,
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <clipping_planes_fragment>',
+      `#include <clipping_planes_fragment>
+if (vWet < 0.42) discard;`,
     )
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       `#include <opaque_fragment>
 vec4 shore = texture2D(uShore, vShoreUv);
-float h = shore.r * 2.0 - 1.0;
-float pond = shore.g;
-float seaEdge = 1.0 - smoothstep(0.0012, 0.004, abs(h));
-float pondEdge = (1.0 - smoothstep(0.038, 0.05, pond)) * step(0.036, pond);
-float rim = max(seaEdge * 0.7, max(pondEdge, shore.b));
-vec2 flowUv = vShoreUv + vec2(uTime * 0.018 * uFlow, 0.0);
+float bank = 1.0 - smoothstep(0.42, 0.92, vWet);
+float depth = smoothstep(0.48, 1.0, vWet);
+gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.22, 0.28, 0.24), depth * 0.38 * uRiparian);
+gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.28, 0.3, 0.26), bank * 0.45 * uRiparian);
+vec2 flowUv = vShoreUv + vec2(uTime * 0.012 * uFlow, 0.0);
 float live = foamLive(flowUv, uTime);
-float current = 0.5 + 0.5 * sin(vShoreUv.x * 14.0 - uTime * uFlow * 1.25);
-current *= mix(1.0, 0.16, pond);
-float gloss = (0.035 + 0.045 * current) * uRiparian;
-gl_FragColor.rgb += vec3(gloss * 0.85, gloss, gloss * 1.12);
-gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.94, 0.97, 1.0), clamp(rim * live * 0.82, 0.0, 1.0));`,
+float rim = max(shore.b, bank * 0.55);
+float current = 0.5 + 0.5 * sin(vShoreUv.x * 18.0 - uTime * uFlow * 0.9);
+float gloss = (0.018 + 0.03 * current) * uRiparian * (1.0 - bank * 0.6);
+gl_FragColor.rgb += vec3(gloss * 0.72, gloss * 0.82, gloss);
+gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.82, 0.86, 0.84), clamp(rim * live * 0.32, 0.0, 0.4));
+gl_FragColor.a *= mix(1.0, 0.78, bank);`,
     )
   }
-  material.customProgramCacheKey = () => `noise-water-foam-pond-${riparian ? 1 : 0}`
+  material.customProgramCacheKey = () => `water-shore-blend-${riparian ? 1 : 0}`
 }
 
 function createSkirtGeometry(segments: number) {
@@ -424,7 +452,7 @@ function Precipitation({
   colonyRef?: MutableRefObject<ColonyState>
 }) {
   const pointsRef = useRef<Points>(null)
-  const count = 1100
+  const count = 640
 
   const { geometry, fall } = useMemo(() => {
     const positions = new Float32Array(count * 3)
@@ -523,7 +551,7 @@ function TerrainPlane({
   const skirtRef = useRef<Mesh>(null)
   const waterMeshRef = useRef<Mesh>(null)
   const landMatRef = useRef<MeshStandardMaterial>(null)
-  const waterMatRef = useRef<MeshStandardMaterial>(null)
+  const waterMatRef = useRef<MeshPhysicalMaterial>(null)
   const landKey = useRef('')
   const landTick = useRef(0)
   const source = applied ?? (showTerrain ? params : null)
@@ -568,7 +596,7 @@ function TerrainPlane({
       riparian,
       params.seaLevel,
     )
-    const waterSeg = Math.max(48, params.planeSegments)
+    const waterSeg = Math.min(80, Math.max(48, params.planeSegments))
     const waterGeo = new PlaneGeometry(params.worldSize, params.worldSize, waterSeg, waterSeg)
     waterGeo.rotateX(-Math.PI / 2)
     applyWaterSurface(waterGeo, field, params, defaultHydro, riparian)
@@ -595,14 +623,14 @@ function TerrainPlane({
 
   useEffect(() => {
     const land = landMatRef.current
-    if (land && !land.userData.waveBound) {
-      bindWaveShader(land)
-      land.userData.waveBound = true
+    if (land && land.userData.landBound !== riparian) {
+      bindLandShader(land, shoreTex, riparian)
+      land.userData.landBound = riparian
       land.needsUpdate = true
     }
     const waterMat = waterMatRef.current
     if (waterMat && waterMat.userData.foamBound !== riparian) {
-      bindWaterFoamShader(waterMat, shoreTex, riparian)
+      bindWaterShader(waterMat, shoreTex, riparian)
       waterMat.userData.foamBound = riparian
       waterMat.needsUpdate = true
     }
@@ -649,7 +677,7 @@ function TerrainPlane({
       Math.abs(hydro.pondArea - (last[3] || 0)) > 0.045 ||
       Math.abs(ice - (last[4] || 0)) > 0.05 ||
       Math.abs(snow - (last[5] || 0)) > 0.05 ||
-      (riparian && running && landTick.current % 8 === 0)
+      (riparian && running && landTick.current % 16 === 0)
     if (landDirty) {
       landKey.current = `${ox}|${oy}|${hydro.upstreamLevel}|${hydro.pondArea}|${ice}|${snow}`
       applyHeightField(
@@ -673,9 +701,16 @@ function TerrainPlane({
     }
     const waterMat = waterMatRef.current
     if (waterMat && riparian) {
-      waterMat.color.setRGB(0.208 + ice * 0.48, 0.384 + ice * 0.42, 0.4 + ice * 0.44)
-      waterMat.opacity = 0.5 + ice * 0.22
-      waterMat.roughness = 0.12 + ice * 0.52
+      const autumn = season?.autumn ?? 0
+      const summer = season?.summer ?? 0
+      waterMat.color.setRGB(
+        0.14 + autumn * 0.07 + ice * 0.22,
+        0.26 + summer * 0.05 + ice * 0.2,
+        0.28 - autumn * 0.05 + ice * 0.22,
+      )
+      waterMat.opacity = 0.58 + ice * 0.18
+      waterMat.roughness = 0.2 + ice * 0.48
+      waterMat.envMapIntensity = 1.25 - ice * 0.55
     }
   })
 
@@ -707,8 +742,9 @@ function TerrainPlane({
           ref={landMatRef}
           vertexColors={Boolean(source)}
           color={source ? '#ffffff' : '#c5c5c5'}
-          roughness={riparian ? 0.94 : weather === 'snow' ? 0.94 : 0.86}
+          roughness={riparian ? 0.9 : weather === 'snow' ? 0.94 : 0.86}
           metalness={0}
+          envMapIntensity={riparian ? 0.22 : 0.12}
           wireframe={!source}
         />
       </mesh>
@@ -722,24 +758,22 @@ function TerrainPlane({
           >
             <meshPhysicalMaterial
               ref={waterMatRef}
-              color={riparian ? '#356266' : '#4ec8f0'}
+              color={riparian ? '#2c4a4c' : '#4ec8f0'}
               transparent
-              opacity={riparian ? 0.5 : 0.38}
-              roughness={riparian ? 0.12 : 0.08}
-              metalness={0.03}
-              transmission={riparian ? 0.28 : 0.35}
-              thickness={riparian ? 0.62 : 0.4}
-              ior={1.33}
-              envMapIntensity={riparian ? 1.15 : 0.8}
+              opacity={riparian ? 0.58 : 0.38}
+              roughness={riparian ? 0.2 : 0.08}
+              metalness={0.02}
+              transmission={riparian ? 0.16 : 0.35}
+              thickness={riparian ? 0.85 : 0.4}
+              ior={1.333}
+              envMapIntensity={riparian ? 1.28 : 0.8}
               depthWrite={false}
-              onBeforeCompile={clipDryWater}
-              customProgramCacheKey={() => 'wet-clip'}
             />
           </mesh>
           <mesh ref={skirtRef} geometry={skirt} raycast={() => {}} receiveShadow={riparian}>
             <meshStandardMaterial
-              color={riparian ? '#d4cec4' : '#f2f2f2'}
-              roughness={0.94}
+              color={riparian ? '#8a8478' : '#f2f2f2'}
+              roughness={0.96}
               metalness={0}
               side={DoubleSide}
             />
@@ -764,7 +798,7 @@ function TerrainPlane({
 
 const CANVAS_GL = { alpha: false, antialias: true, powerPreference: 'high-performance' as const }
 const CANVAS_DPR: [number, number] = [1, 1.75]
-const SHADOW_MAP: [number, number] = [1024, 1024]
+const SHADOW_MAP: [number, number] = [1536, 1536]
 const SHADOWS = { enabled: true, type: PCFShadowMap }
 
 const SPRING_BG = new Color('#d6ddd4')
@@ -789,6 +823,7 @@ function SeasonAtmosphere({
   const bg = useRef(new Color('#d6ddd4'))
   const fogC = useRef(new Color('#c6cec5'))
   const want = useRef(new Color())
+  const sun = useRef<{ intensity: number; color: Color } | null>(null)
   useFrame((_, dt) => {
     if (!riparian || weather !== 'clear' || !colonyRef) return
     const s = colonyRef.current.season
@@ -807,7 +842,23 @@ function SeasonAtmosphere({
       SPRING_FOG.b * s.spring + SUMMER_FOG.b * s.summer + AUTUMN_FOG.b * s.autumn + WINTER_FOG.b * s.winter,
     )
     fogC.current.lerp(want.current, k)
-    if (scene.fog) scene.fog.color.copy(fogC.current)
+    const fog = scene.fog
+    if (fog) {
+      fog.color.copy(fogC.current)
+      if ('density' in fog) {
+        fog.density = 0.034 + s.winter * 0.012 + s.autumn * 0.006
+      }
+    }
+    if (!sun.current) {
+      scene.traverse((obj) => {
+        const light = obj as { isDirectionalLight?: boolean; castShadow?: boolean; intensity: number; color: Color }
+        if (light.isDirectionalLight && light.castShadow) sun.current = light
+      })
+    }
+    if (sun.current) {
+      sun.current.intensity = 0.92 + s.summer * 0.28 - s.winter * 0.18
+      sun.current.color.setRGB(1, 0.96 - s.winter * 0.08 + s.autumn * 0.02, 0.86 - s.winter * 0.1 + s.autumn * 0.05)
+    }
   })
   return null
 }
@@ -835,21 +886,26 @@ function SceneView({
   onSelectBeaver,
   followPos,
   followCamera = false,
+  cameraMode = 'free',
   showTerritory = false,
+  showTreeTargets = false,
+  showResourceNodes = false,
+  showWaterChange = false,
+  showEcologicalZones = false,
 }: SceneProps) {
   const hasLand = applied !== null || showTerrain
   const look = useMemo(
     () =>
       riparian && weather === 'clear'
         ? {
-            bg: '#d6c8b0',
-            fog: ['#d0c4b0', 5.2, 22] as [string, number, number],
-            ambient: 0.36,
-            hemiSky: '#d8e4e8',
-            hemiGround: '#6a6c56',
-            hemi: 0.5,
-            sun: 1.2,
-            fill: 0.14,
+            bg: '#cfc6b6',
+            fog: ['#c8c0b0', 0.038] as [string, number],
+            ambient: 0.22,
+            hemiSky: '#d4dde0',
+            hemiGround: '#5c5a48',
+            hemi: 0.42,
+            sun: 1.05,
+            fill: 0.12,
           }
         : sceneAtmosphere(weather),
     [riparian, weather],
@@ -864,6 +920,8 @@ function SceneView({
       gl={CANVAS_GL}
       onCreated={({ gl, scene }) => {
         gl.setClearColor(clearColor, 1)
+        gl.toneMapping = ACESFilmicToneMapping
+        gl.toneMappingExposure = 1.04
         gl.shadowMap.type = PCFShadowMap
         scene.background = new Color(clearColor)
       }}
@@ -882,26 +940,31 @@ function SceneView({
       dpr={CANVAS_DPR}
     >
       <color attach="background" args={[look.bg]} />
-      <fog attach="fog" args={look.fog} />
+      {riparian && weather === 'clear' ? (
+        <fogExp2 attach="fog" args={look.fog as [string, number]} />
+      ) : (
+        <fog attach="fog" args={look.fog as [string, number, number]} />
+      )}
       <ambientLight intensity={look.ambient} />
       <hemisphereLight color={look.hemiSky} groundColor={look.hemiGround} intensity={look.hemi} />
       <directionalLight
-        position={[params.worldSize * 0.55, params.worldSize * 0.95, params.worldSize * 0.42]}
+        position={[params.worldSize * 0.72, params.worldSize * 0.58, params.worldSize * 0.22]}
         intensity={look.sun}
+        color="#fff4e4"
         castShadow={riparian}
         shadow-mapSize={SHADOW_MAP}
-        shadow-bias={-0.00035}
-        shadow-normalBias={0.035}
-        shadow-camera-near={0.5}
-        shadow-camera-far={params.worldSize * 4}
-        shadow-camera-left={-params.worldSize * 0.85}
-        shadow-camera-right={params.worldSize * 0.85}
-        shadow-camera-top={params.worldSize * 0.85}
-        shadow-camera-bottom={-params.worldSize * 0.85}
+        shadow-bias={-0.00028}
+        shadow-normalBias={0.028}
+        shadow-camera-near={0.4}
+        shadow-camera-far={params.worldSize * 3.2}
+        shadow-camera-left={-params.worldSize * 0.68}
+        shadow-camera-right={params.worldSize * 0.68}
+        shadow-camera-top={params.worldSize * 0.68}
+        shadow-camera-bottom={-params.worldSize * 0.68}
       />
-      <directionalLight position={[-6, 4, -5]} intensity={look.fill} color="#c9d6dc" />
+      <directionalLight position={[-5.2, 3.4, -4.2]} intensity={look.fill} color="#b8c4c8" />
       {riparian && weather === 'clear' ? (
-        <Environment preset="park" background={false} environmentIntensity={0.4} />
+        <Environment preset="forest" background={false} environmentIntensity={0.48} />
       ) : null}
       {riparian ? <SeasonAtmosphere colonyRef={colonyRef} riparian={riparian} weather={weather} /> : null}
       <SkyField
@@ -975,6 +1038,17 @@ function SceneView({
       {hasLand && riparian && colonyRef && showTerritory ? (
         <TerritoryField params={params} offsetRef={offsetRef} colonyRef={colonyRef} />
       ) : null}
+      {hasLand && riparian && colonyRef && (showTreeTargets || showResourceNodes || showWaterChange || showEcologicalZones) ? (
+        <OverlayField
+          params={params}
+          offsetRef={offsetRef}
+          colonyRef={colonyRef}
+          showTreeTargets={showTreeTargets}
+          showResourceNodes={showResourceNodes}
+          showWaterChange={showWaterChange}
+          showEcologicalZones={showEcologicalZones}
+        />
+      ) : null}
       {hasLand && riparian && colonyRef && followPos ? (
         <BeaverField
           params={params}
@@ -987,10 +1061,14 @@ function SceneView({
           offsetRef={offsetRef}
         />
       ) : null}
-      <OrbitControls makeDefault enableDamping />
-      {riparian && followPos ? (
-        <FollowBeaver enabled={Boolean(selectedBeaverId) && followCamera} followPos={followPos} />
-      ) : null}
+      <CameraRig
+        mode={followCamera && cameraMode === 'free' ? 'follow' : cameraMode}
+        params={params}
+        offsetRef={offsetRef}
+        colonyRef={colonyRef}
+        followPos={followPos ?? idleFollow}
+        selectedId={selectedBeaverId}
+      />
     </Canvas>
   )
 }

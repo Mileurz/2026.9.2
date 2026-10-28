@@ -15,6 +15,7 @@ import {
 } from './simulation/Hydrology'
 import { sampleSnow, sampleWater, type WeatherCover, type WeatherKind } from './weather'
 import type { ColonyState } from './simulation/Colony'
+import { findTree } from './simulation/TreeResource'
 
 export type TreeSpot = {
   id: string
@@ -176,6 +177,7 @@ function PlantedTree({
   const stumpRef = useRef<Mesh>(null)
   const gnawRef = useRef<Mesh>(null)
   const frost = useRef(0)
+  const skip = useRef(0)
   const kind = isTreeKind(spot.kind) ? spot.kind : DEFAULT_TREE_KIND
 
   useLayoutEffect(() => {
@@ -186,20 +188,27 @@ function PlantedTree({
     const group = ref.current
     const fall = fallRef.current
     if (!group) return
-    const field = getHeightField(params, offsetRef.current.x, offsetRef.current.y)
-    const res = colonyRef?.current.forest?.trees.find((t) => t.id === spot.id)
+    skip.current += 1
+    const forest = colonyRef?.current.forest
+    const res = forest ? findTree(forest, spot.id) : undefined
     const marked = Boolean(res && (res.chewProgress > 0.12 || res.fallProgress > 0))
+    const piled = sampleSnow(coverRef.current, spot.u, spot.v)
+    const needDust = weather === 'snow' || piled > 0.002 || frost.current > 0.002
+    if (!marked && !needDust && skip.current % 16 !== 0) return
+    const field = getHeightField(params, offsetRef.current.x, offsetRef.current.y)
     if (!marked && !canGrowTree(params, field, coverRef.current, spot.u, spot.v)) {
       group.visible = false
       return
     }
     group.visible = true
-    const { y } = surfaceY(params, coverRef.current, offsetRef.current, spot.u, spot.v)
-    group.position.set(
-      (spot.u - 0.5) * params.worldSize,
-      y,
-      (spot.v - 0.5) * params.worldSize,
-    )
+    if (marked || skip.current % 16 === 0) {
+      const { y } = surfaceY(params, coverRef.current, offsetRef.current, spot.u, spot.v)
+      group.position.set(
+        (spot.u - 0.5) * params.worldSize,
+        y,
+        (spot.v - 0.5) * params.worldSize,
+      )
+    }
     if (fall && res) {
       fall.rotation.set(0, res.fallHeading, 0)
       fall.rotateX(res.fallProgress * res.fallProgress * Math.PI * 0.5)
@@ -210,7 +219,6 @@ function PlantedTree({
       const pinch = (res?.chewProgress ?? 0) < 0.55 ? 1 : 0.55
       gnawRef.current.scale.set(pinch, 1, 1.15)
     }
-    const piled = sampleSnow(coverRef.current, spot.u, spot.v)
     if (weather === 'snow') {
       if (piled < 0.002 && frost.current > 0.2) frost.current = 0
       const pace = running ? speed : 0.18
@@ -218,7 +226,7 @@ function PlantedTree({
     } else {
       frost.current = Math.min(1, piled / 0.55)
     }
-    dustTree(group, frost.current)
+    if (needDust) dustTree(group, frost.current)
   })
 
   const cut = 0.05 / Math.max(0.35, spot.scale)
